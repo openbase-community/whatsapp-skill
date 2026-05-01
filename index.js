@@ -1,4 +1,4 @@
-import { mkdirSync, writeFileSync } from 'node:fs'
+import { mkdirSync, writeFileSync, readFileSync, existsSync } from 'node:fs'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import qrcode from 'qrcode-terminal'
@@ -19,6 +19,9 @@ const makeWASocket = baileys.default ?? baileys
 const ROOT = dirname(fileURLToPath(import.meta.url))
 const DATA_DIR = join(ROOT, 'data')
 const AUTH_DIR = join(ROOT, 'auth')
+const CONTACTS_FILE = join(DATA_DIR, 'contacts.json')
+const CHATS_FILE = join(DATA_DIR, 'chats.json')
+const GROUPS_DIR = join(DATA_DIR, 'groups')
 
 const logger = pino({ level: process.env.LOG_LEVEL ?? 'warn' })
 
@@ -36,6 +39,57 @@ function tsParts(unixSecs) {
 
 function safe(s) {
   return String(s ?? 'unknown').replace(/[^a-zA-Z0-9._-]+/g, '_').slice(0, 80)
+}
+
+function loadJson(p) {
+  try {
+    return existsSync(p) ? JSON.parse(readFileSync(p, 'utf8'), BufferJSON.reviver) : null
+  } catch (err) {
+    console.error('load failed', p, err)
+    return null
+  }
+}
+
+const contacts = loadJson(CONTACTS_FILE) ?? {}
+const chatsState = loadJson(CHATS_FILE) ?? {}
+let contactsDirty = false
+let chatsDirty = false
+
+function flushContacts() {
+  if (!contactsDirty) return
+  mkdirSync(DATA_DIR, { recursive: true })
+  writeFileSync(CONTACTS_FILE, JSON.stringify(contacts, BufferJSON.replacer, 2))
+  contactsDirty = false
+}
+function flushChats() {
+  if (!chatsDirty) return
+  mkdirSync(DATA_DIR, { recursive: true })
+  writeFileSync(CHATS_FILE, JSON.stringify(chatsState, BufferJSON.replacer, 2))
+  chatsDirty = false
+}
+setInterval(() => { flushContacts(); flushChats() }, 10_000).unref()
+
+function upsertContacts(arr) {
+  if (!Array.isArray(arr) || !arr.length) return
+  for (const c of arr) {
+    if (!c?.id) continue
+    contacts[c.id] = { ...contacts[c.id], ...c }
+  }
+  contactsDirty = true
+}
+function upsertChats(arr) {
+  if (!Array.isArray(arr) || !arr.length) return
+  for (const c of arr) {
+    if (!c?.id) continue
+    chatsState[c.id] = { ...chatsState[c.id], ...c }
+  }
+  chatsDirty = true
+}
+function writeGroup(meta) {
+  if (!meta?.id) return
+  mkdirSync(GROUPS_DIR, { recursive: true })
+  const file = join(GROUPS_DIR, `${safe(meta.id)}.json`)
+  writeFileSync(file, JSON.stringify({ capturedAt: new Date().toISOString(), metadata: meta }, BufferJSON.replacer, 2))
 }
 
 function writeMessage(msg, sourceTag) {
@@ -88,6 +142,13 @@ async function start() {
     }
     if (connection === 'open') {
       console.log('connection open — archiving to', DATA_DIR)
+      sock.groupFetchAllParticipating()
+        .then(map => {
+          let n = 0
+          for (const meta of Object.values(map ?? {})) { writeGroup(meta); n++ }
+          if (n) console.log(`[groups] backfilled ${n} group metadata files`)
+        })
+        .catch(err => console.error('groupFetchAllParticipating failed', err))
     }
     if (connection === 'close') {
       const code = new Boom(lastDisconnect?.error)?.output?.statusCode
@@ -117,7 +178,9 @@ async function start() {
     }
   })
 
-  sock.ev.on('messaging-history.set', ({ messages, syncType, progress }) => {
+  sock.ev.on('messaging-history.set', ({ messages, contacts: hContacts, chats: hChats, syncType, progress }) => {
+    upsertContacts(hContacts)
+    upsertChats(hChats)
     let n = 0
     for (const m of messages ?? []) {
       try {
@@ -127,9 +190,36 @@ async function start() {
         console.error('history write failed', err)
       }
     }
-    if (n) console.log(`[history syncType=${syncType} progress=${progress ?? '?'}%] saved ${n} messages`)
+    if (n || hContacts?.length || hChats?.length) {
+      console.log(
+        `[history syncType=${syncType} progress=${progress ?? '?'}%] ` +
+          `messages=${n} contacts=${hContacts?.length ?? 0} chats=${hChats?.length ?? 0}`
+      )
+    }
+  })
+
+  sock.ev.on('contacts.upsert', upsertContacts)
+  sock.ev.on('contacts.update', upsertContacts)
+  sock.ev.on('chats.upsert', upsertChats)
+  sock.ev.on('chats.update', upsertChats)
+  sock.ev.on('groups.upsert', arr => { for (const g of arr ?? []) writeGroup(g) })
+  sock.ev.on('groups.update', arr => { for (const g of arr ?? []) writeGroup(g) })
+  sock.ev.on('group-participants.update', async ({ id }) => {
+    try {
+      const meta = await sock.groupMetadata(id)
+      writeGroup(meta)
+    } catch (err) {
+      console.error('groupMetadata refresh failed', id, err)
+    }
   })
 }
+
+function shutdown() {
+  try { flushContacts(); flushChats() } catch {}
+  process.exit(0)
+}
+process.on('SIGTERM', shutdown)
+process.on('SIGINT', shutdown)
 
 start().catch(err => {
   console.error('fatal', err)
