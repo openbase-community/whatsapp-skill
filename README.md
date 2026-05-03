@@ -89,6 +89,46 @@ launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/xyz.mindfulmakers.whatsa
 
 The first time the watchdog notifies, macOS may ask you to grant notification permission for `osascript` (System Settings → Notifications). Until you do, failures still get logged to `logs/watchdog.log`.
 
+## Hooks (local-only)
+
+The archiver checks every live inbound message against any hook classes you drop into `hooks/`. The directory is gitignored, so private hook logic stays on this machine.
+
+A hook is a class that subclasses `Hook` from `./base.js` and exports as the default. `match` decides whether the hook fires; `run` executes the side effect.
+
+```js
+// hooks/example.js
+import { Hook } from './base.js'
+export default class Example extends Hook {
+  match(msg, ctx) { return msg.message?.conversation === 'ping' }
+  async run(msg, ctx) { await ctx.sock.sendMessage(msg.key.remoteJid, { text: 'pong' }) }
+}
+```
+
+The context passed in is `{ contacts, chats, sock, root, logger, type }` — `contacts` and `chats` are the live in-memory maps (read-only by convention), `sock` is the Baileys socket (use it to reply), `type` is the upsert type (`notify` for fresh inbound, `append` for after-the-fact echoes — hooks only fire when `type === 'notify'` and `key.fromMe === false`).
+
+Hooks fire only on **live** messages — never on `messaging-history.set` backfills, never on your own outbound messages.
+
+After dropping a new hook in, kickstart the agent so it picks it up:
+
+```sh
+launchctl kickstart -k gui/$(id -u)/xyz.mindfulmakers.whatsapp-archive
+tail -f ~/Developer/whatsapp/logs/launchd.out.log   # look for `[hooks] loaded N: ...`
+```
+
+**State warning:** every reconnect runs `start()` again, which rebuilds the hook instances. Don't keep mutable state in instance fields you'd want to outlive a disconnect — write it to disk instead.
+
+**Fresh-clone bootstrap.** Since `hooks/` is gitignored, a fresh checkout has no base class. Recreate it once:
+
+```sh
+mkdir -p hooks && cat > hooks/base.js <<'EOF'
+export class Hook {
+  get name() { return this.constructor.name }
+  match(_message, _context) { return false }
+  async run(_message, _context) {}
+}
+EOF
+```
+
 ## Notes
 
 - `markOnlineOnConnect: false` keeps your phone's "online" indicator off while the archiver runs.

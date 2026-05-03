@@ -1,6 +1,6 @@
-import { mkdirSync, writeFileSync, readFileSync, existsSync } from 'node:fs'
+import { mkdirSync, writeFileSync, readFileSync, existsSync, readdirSync } from 'node:fs'
 import { join, dirname } from 'node:path'
-import { fileURLToPath } from 'node:url'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 import qrcode from 'qrcode-terminal'
 import QRCode from 'qrcode'
 import { spawn } from 'node:child_process'
@@ -19,6 +19,7 @@ const makeWASocket = baileys.default ?? baileys
 const ROOT = dirname(fileURLToPath(import.meta.url))
 const DATA_DIR = join(ROOT, 'data')
 const AUTH_DIR = join(ROOT, 'auth')
+const HOOKS_DIR = join(ROOT, 'hooks')
 const CONTACTS_FILE = join(DATA_DIR, 'contacts.json')
 const CHATS_FILE = join(DATA_DIR, 'chats.json')
 const GROUPS_DIR = join(DATA_DIR, 'groups')
@@ -108,10 +109,30 @@ function writeMessage(msg, sourceTag) {
   return file
 }
 
+async function loadHooks() {
+  const hooks = []
+  if (!existsSync(HOOKS_DIR)) return hooks
+  for (const f of readdirSync(HOOKS_DIR).sort()) {
+    if (!f.endsWith('.js') || f === 'base.js') continue
+    try {
+      const mod = await import(pathToFileURL(join(HOOKS_DIR, f)).href)
+      const HookClass = mod.default
+      if (typeof HookClass === 'function') hooks.push(new HookClass())
+      else console.error('[hooks] no default export class in', f)
+    } catch (err) {
+      console.error('[hooks] load failed', f, err)
+    }
+  }
+  return hooks
+}
+
 async function start() {
   const { state, saveCreds } = await useMultiFileAuthState(AUTH_DIR)
   const { version, isLatest } = await fetchLatestBaileysVersion()
   console.log(`baileys version=${version.join('.')} latest=${isLatest}`)
+
+  const hooks = await loadHooks()
+  if (hooks.length) console.log(`[hooks] loaded ${hooks.length}: ${hooks.map(h => h.name).join(', ')}`)
 
   const sock = makeWASocket({
     version,
@@ -125,6 +146,8 @@ async function start() {
     syncFullHistory: true,
     getMessage: async () => undefined,
   })
+
+  const hookCtx = { contacts, chats: chatsState, sock, root: ROOT, logger }
 
   sock.ev.on('creds.update', saveCreds)
 
@@ -162,7 +185,7 @@ async function start() {
     }
   })
 
-  sock.ev.on('messages.upsert', ({ messages, type }) => {
+  sock.ev.on('messages.upsert', async ({ messages, type }) => {
     for (const m of messages) {
       try {
         const file = writeMessage(m, `messages.upsert:${type}`)
@@ -174,6 +197,20 @@ async function start() {
         console.log(`[upsert ${type}] ${m.key.remoteJid} → ${file}  ${String(preview).slice(0, 80)}`)
       } catch (err) {
         console.error('write failed', err)
+      }
+
+      if (type === 'notify' && !m.key.fromMe && hooks.length) {
+        const ctx = { ...hookCtx, type }
+        for (const hook of hooks) {
+          try {
+            if (await hook.match(m, ctx)) {
+              await hook.run(m, ctx)
+              console.log(`[hook] ${hook.name} fired for ${m.key.remoteJid}`)
+            }
+          } catch (err) {
+            console.error('[hook]', hook.name, 'failed', err)
+          }
+        }
       }
     }
   })
