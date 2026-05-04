@@ -36,58 +36,68 @@ Each JSON file contains:
 
 ## Re-pairing
 
-If WhatsApp logs the device out (or you want a fresh start):
+If WhatsApp logs the device out (or you want a fresh start), the auth directory is owned by `_whatsapp` so the rm + restart needs to happen as that user (or via sudo):
 
 ```sh
-rm -rf ~/Developer/whatsapp/auth
-./run.sh
-```
-
-## Always-on (launchd)
-
-This Mac mini runs the archiver as a per-user LaunchAgent so it survives reboot, login, and crashes. Plist at `~/Library/LaunchAgents/xyz.mindfulmakers.whatsapp-archive.plist`. Logs go to `logs/launchd.out.log` and `logs/launchd.err.log`.
-
-```sh
-# Status
-launchctl print gui/$(id -u)/xyz.mindfulmakers.whatsapp-archive | head -40
-
-# Stop (won't auto-restart until reboot or kickstart)
-launchctl bootout gui/$(id -u)/xyz.mindfulmakers.whatsapp-archive
-
-# Start (after bootout, or for the very first install)
-launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/xyz.mindfulmakers.whatsapp-archive.plist
-
-# Force a restart (KeepAlive will respawn it)
-launchctl kickstart -k gui/$(id -u)/xyz.mindfulmakers.whatsapp-archive
-
-# Tail live output
+sudo rm -rf ~/Developer/whatsapp/auth
+sudo launchctl kickstart -k system/xyz.mindfulmakers.whatsapp-archive
+# QR will land in launchd.out.log; also as a PNG at /tmp/pair-qr.png if writeable.
+# Scan with WhatsApp → Settings → Linked devices → Link a device.
 tail -f ~/Developer/whatsapp/logs/launchd.out.log
 ```
 
-The `ProgramArguments` shell-resolves the latest installed nvm node at launch — if you remove that node version, edit the plist to point at a valid node binary and re-bootstrap.
+For interactive testing (skipping launchd), `run.sh` still works but you must invoke it as `_whatsapp` so the auth/ writes are owned correctly:
+
+```sh
+sudo -u _whatsapp /usr/bin/env -i HOME=/var/empty PATH=/opt/homebrew/bin:/usr/bin:/bin \
+  /Users/shams/.nvm/versions/node/v24.13.1/bin/node ~/Developer/whatsapp/index.js
+```
+
+## Always-on (launchd as `_whatsapp`)
+
+The archiver runs as a **system LaunchDaemon** under a dedicated, hidden service user `_whatsapp` (UID 450). The plist lives at `/Library/LaunchDaemons/xyz.mindfulmakers.whatsapp-archive.plist` (root-owned, world-readable, mode 644). A versioned copy of the plist is in `launchd/` for reinstall reproducibility.
+
+`data/`, `auth/`, and `logs/` are owned by `_whatsapp:whatsapp-data` and chmod'd `750`. Membership: `shams` and `_whatsapp` are in `whatsapp-data`. Future AI-process users (`_linkedin`, etc.) without that group membership cannot read this archive. See **Lockdown** section below for setup.
+
+```sh
+# Status (note: system/ domain, NOT gui/$UID/)
+launchctl print system/xyz.mindfulmakers.whatsapp-archive | head -40
+
+# Stop / start (sudo because /Library/LaunchDaemons is root-owned)
+sudo launchctl bootout   system/xyz.mindfulmakers.whatsapp-archive
+sudo launchctl bootstrap system /Library/LaunchDaemons/xyz.mindfulmakers.whatsapp-archive.plist
+
+# Force restart
+sudo launchctl kickstart -k system/xyz.mindfulmakers.whatsapp-archive
+
+# Tail live output (logs/ is _whatsapp-owned but shams can read via group)
+tail -f ~/Developer/whatsapp/logs/launchd.out.log
+```
+
+The plist hardcodes the absolute path to node (`/Users/shams/.nvm/versions/node/v24.13.1/bin/node`). If you upgrade or remove that nvm version, edit the plist to point at a valid binary and re-bootstrap. (We can't shell-resolve nvm dynamically because `_whatsapp`'s `$HOME` is `/var/empty`.)
 
 ## Watchdog
 
-A second LaunchAgent (`xyz.mindfulmakers.whatsapp-watchdog`) runs `watchdog.sh` every 3 hours and posts a macOS notification if either:
+A LaunchAgent (`xyz.mindfulmakers.whatsapp-watchdog`, plist at `~/Library/LaunchAgents/...`) runs `watchdog.sh` every 3 hours under `shams` and posts a macOS notification if either:
 
-- the archiver agent is not in `state = running`, or
-- the newest file in `data/` is older than 36h (override with `WHATSAPP_WATCHDOG_MAX_AGE_HOURS`).
+- the archiver daemon is not in `state = running` (queries `system/...`), or
+- the newest message file under `data/<YYYY-MM-DD>/` is older than 36h (override with `WHATSAPP_WATCHDOG_MAX_AGE_HOURS`).
 
-OK runs append a one-line entry to `logs/watchdog.log`. Failures notify on the desktop and append a `FAIL:` line.
+The watchdog stays as a per-user Agent (not a Daemon) because Daemons can't post desktop notifications. It reads `data/` via `shams`'s membership in the `whatsapp-data` group. Watchdog logs go to `~/Library/Logs/whatsapp-watchdog/` (a shams-writable location off the locked-down archiver tree).
 
 ```sh
 # Run the check by hand
 ~/Developer/whatsapp/watchdog.sh; echo exit=$?
 
 # Tail the rolling status
-tail -f ~/Developer/whatsapp/logs/watchdog.log
+tail -f ~/Library/Logs/whatsapp-watchdog/watchdog.log
 
 # Disable / enable the watchdog itself
 launchctl bootout gui/$(id -u)/xyz.mindfulmakers.whatsapp-watchdog
 launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/xyz.mindfulmakers.whatsapp-watchdog.plist
 ```
 
-The first time the watchdog notifies, macOS may ask you to grant notification permission for `osascript` (System Settings → Notifications). Until you do, failures still get logged to `logs/watchdog.log`.
+The first time the watchdog notifies, macOS may ask you to grant notification permission for `osascript` (System Settings → Notifications). Until you do, failures still get logged to `~/Library/Logs/whatsapp-watchdog/watchdog.log`.
 
 ## Hooks (local-only)
 
@@ -129,9 +139,49 @@ export class Hook {
 EOF
 ```
 
+## Lockdown (one-time setup, reproducible from scratch)
+
+The archive contains your full WhatsApp message history; we lock it down so other process-users on this machine (e.g. future `_linkedin`, `_email` etc.) cannot read it. Pattern: dedicated service user owns the runtime dirs, a small read group includes only `shams` and the service user.
+
+```sh
+# 1. Create the service user (UID 450, hidden from login picker, no shell, no home).
+sudo dscl . -create /Users/_whatsapp
+sudo dscl . -create /Users/_whatsapp UniqueID 450
+sudo dscl . -create /Users/_whatsapp PrimaryGroupID 450
+sudo dscl . -create /Users/_whatsapp UserShell /usr/bin/false
+sudo dscl . -create /Users/_whatsapp NFSHomeDirectory /var/empty
+sudo dscl . -create /Users/_whatsapp RealName "WhatsApp Archiver"
+sudo dscl . -create /Users/_whatsapp Password '*'
+sudo dscl . -create /Users/_whatsapp IsHidden 1
+
+# 2. Create the read group + memberships.
+sudo dseditgroup -o create -i 450 -r "WhatsApp data readers" whatsapp-data
+sudo dseditgroup -o edit -a shams      -t user whatsapp-data
+sudo dseditgroup -o edit -a _whatsapp  -t user whatsapp-data
+sudo dseditgroup -o edit -a _whatsapp  -t user staff   # so _whatsapp can traverse /Users/shams to reach node + source
+
+# 3. Transfer ownership and lock perms.
+sudo chown -R _whatsapp:whatsapp-data data/ auth/ logs/
+sudo chmod  -R u=rwX,g=rX,o= data/ auth/ logs/
+
+# 4. Install the LaunchDaemon (the plist in launchd/ is identical to /Library/LaunchDaemons/...).
+sudo cp launchd/xyz.mindfulmakers.whatsapp-archive.plist /Library/LaunchDaemons/
+sudo chown root:wheel /Library/LaunchDaemons/xyz.mindfulmakers.whatsapp-archive.plist
+sudo chmod 644       /Library/LaunchDaemons/xyz.mindfulmakers.whatsapp-archive.plist
+sudo launchctl bootstrap system /Library/LaunchDaemons/xyz.mindfulmakers.whatsapp-archive.plist
+
+# 5. Install the watchdog Agent.
+cp launchd/xyz.mindfulmakers.whatsapp-watchdog.plist ~/Library/LaunchAgents/
+launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/xyz.mindfulmakers.whatsapp-watchdog.plist
+```
+
+After step 2, `shams`'s group membership change won't show up in existing terminal sessions until you log out and back in. Launchd-spawned processes pick it up immediately.
+
+To add another locked-down archiver later (e.g. `_linkedin`), repeat the pattern with `_linkedin` + `linkedin-data` group; `shams` joins both read groups but the two service users never join each other's.
+
 ## Notes
 
 - `markOnlineOnConnect: false` keeps your phone's "online" indicator off while the archiver runs.
 - `syncFullHistory: true` requests the full history sync; messages arrive via `messaging-history.set` and are saved alongside live ones.
-- `run.sh` is the interactive entry point (prints QR to terminal, opens `pair-qr.png` in Preview). Once paired, the LaunchAgent takes over — `run.sh` is mostly there for the initial pairing flow or for debugging.
-- `auth/`, `data/`, `logs/`, and `node_modules/` are all gitignored.
+- `run.sh` is the interactive entry point (prints QR to terminal, opens `pair-qr.png` in Preview). After lockdown, prefer the `sudo -u _whatsapp` invocation in **Re-pairing** above.
+- `auth/`, `data/`, `logs/`, `node_modules/`, and `hooks/` are all gitignored. `launchd/` plists are tracked so the lockdown is reproducible from the repo.

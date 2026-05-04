@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>xyz.mindfulmakers.whatsapp-watchdog</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/Users/shams/Developer/whatsapp/watchdog.sh</string>
+    </array>
+
+    <key>WorkingDirectory</key>
+    <string>/Users/shams/Developer/whatsapp</string>
+
+    <key>StartInterval</key>
+    <integer>10800</integer>
+
+    <key>RunAtLoad</key>
+    <true/>
+
+    <key>StandardOutPath</key>
+    <string>/Users/shams/Library/Logs/whatsapp-watchdog/watchdog.out.log</string>
+
+    <key>StandardErrorPath</key>
+    <string>/Users/shams/Library/Logs/whatsapp-watchdog/watchdog.err.log</string>
+
+    <key>ProcessType</key>
+    <string>Background</string>
+</dict>
+</plist>
