@@ -20,7 +20,6 @@ fi
 
 label_prefix="${WHATSAPP_LAUNCHD_LABEL_PREFIX:-com.$run_user.whatsapp}"
 archive_label="$label_prefix-archive"
-mcp_label="$label_prefix-mcp"
 watchdog_label="$label_prefix-watchdog"
 
 node_bin="${WHATSAPP_NODE_BIN:-/opt/homebrew/bin/node}"
@@ -42,7 +41,6 @@ render_plist() {
     -e "s/{{USER_HOME}}/$(escape_sed_replacement "$user_home")/g" \
     -e "s/{{NODE_BIN}}/$(escape_sed_replacement "$node_bin")/g" \
     -e "s/{{ARCHIVE_LABEL}}/$(escape_sed_replacement "$archive_label")/g" \
-    -e "s/{{MCP_LABEL}}/$(escape_sed_replacement "$mcp_label")/g" \
     -e "s/{{WATCHDOG_LABEL}}/$(escape_sed_replacement "$watchdog_label")/g" \
     "$template" > "$output"
   /usr/bin/plutil -lint "$output" >/dev/null
@@ -61,13 +59,13 @@ done
 
 echo "Rendering launchd plists..."
 render_plist "$repo_dir/launchd/whatsapp-archive.plist.template" "$generated_dir/$archive_label.plist"
-render_plist "$repo_dir/launchd/whatsapp-mcp.plist.template" "$generated_dir/$mcp_label.plist"
 render_plist "$repo_dir/launchd/whatsapp-watchdog.plist.template" "$generated_dir/$watchdog_label.plist"
 
 for old_label in \
   xyz.mindfulmakers.whatsapp-archive \
   xyz.mindfulmakers.whatsapp-mcp \
-  xyz.mindfulmakers.whatsapp-watchdog
+  xyz.mindfulmakers.whatsapp-watchdog \
+  "$label_prefix-mcp"
 do
   old_target="/Library/LaunchDaemons/$old_label.plist"
   if [[ -e "$old_target" ]]; then
@@ -77,7 +75,7 @@ do
   fi
 done
 
-for label in "$archive_label" "$mcp_label"; do
+for label in "$archive_label"; do
   echo "Installing $label..."
   plist="$generated_dir/$label.plist"
   target="/Library/LaunchDaemons/$label.plist"
@@ -101,5 +99,4 @@ chmod 644 "$watchdog_target"
 launchctl bootout "gui/$(id -u "$run_user")/$watchdog_label" 2>/dev/null || true
 launchctl asuser "$(id -u "$run_user")" launchctl bootstrap "gui/$(id -u "$run_user")" "$watchdog_target" 2>/dev/null || true
 
-echo "Installed and restarted WhatsApp archive and MCP LaunchDaemons."
-echo "MCP health: curl http://127.0.0.1:3055/health"
+echo "Installed and restarted WhatsApp archive LaunchDaemon and watchdog LaunchAgent."

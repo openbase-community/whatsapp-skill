@@ -1,6 +1,6 @@
 # whatsapp archive
 
-Connects to your WhatsApp account via [Baileys](https://baileys.wiki/docs/intro/) and stores approved-contact message history for local MCP access.
+Connects to your WhatsApp account via [Baileys](https://baileys.wiki/docs/intro/) and stores approved-contact message history for local CLI access.
 
 ## First run
 
@@ -11,57 +11,44 @@ cd ~/Developer/whatsapp
 
 `run.sh` will `npm install` on first launch, then start the archiver. The terminal will display a QR code — open WhatsApp on your phone → **Settings → Linked devices → Link a device**, and scan it. Credentials are persisted to `./auth/` so subsequent runs reconnect without a new QR.
 
-## MCP-approved SQLite store
+## Approval-gated CLI store
 
-The MCP-facing store lives at `data/whatsapp-mcp.sqlite` by default. It is intentionally narrow:
+The CLI-facing store lives at `data/whatsapp-cli.sqlite` by default. It is intentionally narrow:
 
 - Unapproved contacts/chats may be discovered as metadata, but their message bodies are not stored in SQLite.
 - Approved contacts/chats have recent archived messages backfilled into SQLite on approval, then future messages stored live.
-- MCP tools can list/search contact metadata by name and read the last N stored messages for an approved conversation.
+- The CLI can list/search contact metadata by name and read the last N stored messages for an approved conversation.
 - Contact metadata tools return names, JIDs, and permission flags only; they do not return message bodies.
-- `send_message` queues a local outbound request only when the contact has send permission. Actual WhatsApp delivery only happens when the Baileys archiver is separately run with `WHATSAPP_SEND_OUTBOX=1`.
+- `send` queues a local outbound request only when the contact has send permission. Actual WhatsApp delivery only happens when the Baileys archiver is separately run with `WHATSAPP_SEND_OUTBOX=1`.
 
-Run the MCP server over stdio:
-
-```sh
-npm run mcp
-```
-
-Run the MCP server over Streamable HTTP:
+Use the CLI directly:
 
 ```sh
-npm run mcp:http
+npm run whatsapp -- help
+npm run whatsapp -- search "Grace" --json
+npm run whatsapp -- recent "15551234567@s.whatsapp.net" --limit 10 --json
 ```
 
-The HTTP endpoint defaults to `http://127.0.0.1:3055/mcp`, with a health check at `http://127.0.0.1:3055/health`. This is the preferred always-on MCP mode for the Mac mini because clients connect over network HTTP instead of spawning a stdio process.
-
-By default, the MCP exposes only:
-
-- `list_contacts`
-- `search_contacts`
-- `list_recent_messages`
-
-Additional tools are hidden unless explicitly enabled with environment flags:
+If the package is linked or installed, the binary name is `whatsapp-local`:
 
 ```sh
-WHATSAPP_MCP_CONTACT_LIST=1 npm run mcp  # adds list_approved_contacts
-WHATSAPP_MCP_SEND=1 npm run mcp          # adds send_message
-WHATSAPP_MCP_ADMIN=1 npm run mcp         # adds approve_contact and revoke_contact
+whatsapp-local search "Grace" --json
 ```
 
-The same flags apply to `npm run mcp:http`. Do not enable `WHATSAPP_MCP_SEND=1` unless you explicitly want MCP clients to queue outbound WhatsApp messages; the Mac mini launchd service below leaves it disabled.
-
-For direct LAN exposure, set `WHATSAPP_MCP_HOST=0.0.0.0` and set `WHATSAPP_MCP_TOKEN` in the local installed plist. Requests must then include `Authorization: Bearer <token>` or `X-WhatsApp-MCP-Token: <token>`. Without a token, the HTTP server refuses to bind to non-local hosts unless `WHATSAPP_MCP_ALLOW_UNAUTHENTICATED_LAN=1` is also set. A safer MacBook-to-Mac-mini setup is to keep the service bound to `127.0.0.1` on the Mac mini and connect through an SSH tunnel:
+Available commands:
 
 ```sh
-ssh -N -L 3055:127.0.0.1:3055 gabemontague@<mac-mini-hostname-or-ip>
+whatsapp-local contacts [--limit N] [--offset N] [--json]
+whatsapp-local search QUERY [--limit N] [--json]
+whatsapp-local approved [--json]
+whatsapp-local recent CONTACT_ID [--limit N] [--before TIMESTAMP_MS] [--json]
+whatsapp-local approve CONTACT_ID [--name NAME] [--send] [--no-read] [--backfill-months N] [--json]
+whatsapp-local revoke CONTACT_ID [--json]
+whatsapp-local send CONTACT_ID TEXT [--json]
+whatsapp-local queued [--limit N] [--json]
 ```
 
-Then point the MCP client on the MacBook at `http://127.0.0.1:3055/mcp`.
-
-This lets a Codex install expose only recent-message reads while keeping contact listing, send queueing, and approval changes behind an explicit config change. Sensitive tools are also marked with MCP annotations as non-read-only/destructive when enabled.
-
-Approving a contact backfills matching local JSON archive messages for that exact JID, then stores future messages live. Backfill defaults to the last 6 months and can be changed per approval with `backfill_months` or globally with `WHATSAPP_MCP_BACKFILL_MONTHS`. It still does not load messages for unapproved contacts.
+This lets a local skill expose only explicit CLI commands while keeping raw WhatsApp archive files out of agent context. Approving a contact backfills matching local JSON archive messages for that exact JID, then stores future messages live. Backfill defaults to the last 6 months and can be changed per approval with `--backfill-months` or globally with `WHATSAPP_BACKFILL_MONTHS`. It still does not load messages for unapproved contacts.
 
 ## Optional raw JSON archive
 
@@ -115,19 +102,9 @@ sudo -u _whatsapp /usr/bin/env -i HOME=/var/empty PATH=/opt/homebrew/bin:/usr/bi
 
 The archiver runs as a **system LaunchDaemon** under a dedicated, hidden service user `_whatsapp` (UID 450). The installed plist lives at `/Library/LaunchDaemons/com.gabemontague.whatsapp-archive.plist` (root-owned, world-readable, mode 644). The repo tracks launchd templates; `scripts/install-launchd-services.sh` renders local plists into `.generated/launchd/` so usernames and absolute paths are not committed.
 
-The network MCP server has its own Mac-mini-only LaunchDaemon:
-
-- label: `com.gabemontague.whatsapp-mcp`
-- generated plist: `.generated/launchd/com.gabemontague.whatsapp-mcp.plist`
-- installed plist: `/Library/LaunchDaemons/com.gabemontague.whatsapp-mcp.plist`
-- endpoint: `http://127.0.0.1:3055/mcp`
-- health: `http://127.0.0.1:3055/health`
-
-It runs as `_whatsapp:whatsapp-data`, reads the same approval-gated SQLite store as the stdio MCP, and exposes only `list_contacts`, `search_contacts`, and `list_recent_messages` unless the same `WHATSAPP_MCP_*` flags are added to the installed plist. It is intentionally not a MacBook Pro LaunchAgent; install it only on the Mac mini.
-
 `data/`, `auth/`, and `logs/` are owned by `_whatsapp:whatsapp-data` and chmod'd `750`. Membership: `gabemontague` and `_whatsapp` are in `whatsapp-data`. Future AI-process users (`_linkedin`, etc.) without that group membership cannot read this archive. See **Lockdown** section below for setup.
 
-For this machine, reinstall both system LaunchDaemons with:
+For this machine, reinstall the archive LaunchDaemon and watchdog with:
 
 ```sh
 cd ~/Developer/whatsapp
@@ -149,15 +126,6 @@ sudo launchctl kickstart -k system/com.gabemontague.whatsapp-archive
 
 # Tail live output (logs/ is _whatsapp-owned but gabemontague can read via group)
 tail -f ~/Developer/whatsapp/logs/launchd.out.log
-```
-
-Operate it:
-
-```sh
-launchctl print system/com.gabemontague.whatsapp-mcp | head -40
-sudo launchctl kickstart -k system/com.gabemontague.whatsapp-mcp
-curl http://127.0.0.1:3055/health
-tail -f ~/Developer/whatsapp/logs/mcp-http.out.log
 ```
 
 The generated plists use `/opt/homebrew/bin/node` by default. If Homebrew moves, reinstall with `WHATSAPP_NODE_BIN=/path/to/node sudo ./scripts/install-launchd-services.sh`.
@@ -250,7 +218,7 @@ sudo dseditgroup -o edit -a _whatsapp  -t user staff   # so _whatsapp can traver
 sudo chown -R _whatsapp:whatsapp-data data/ auth/ logs/
 sudo chmod  -R u=rwX,g=rX,o= data/ auth/ logs/
 
-# 4. Render and install the archive daemon, MCP daemon, and watchdog agent.
+# 4. Render and install the archive daemon and watchdog agent.
 sudo ./scripts/install-launchd-services.sh
 ```
 

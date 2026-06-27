@@ -18,7 +18,7 @@ import {
 } from '../lib/whatsapp-db.js'
 
 function withDb(fn) {
-  const dir = mkdtempSync(join(tmpdir(), 'whatsapp-mcp-test-'))
+  const dir = mkdtempSync(join(tmpdir(), 'whatsapp-cli-test-'))
   const db = openWhatsAppDb({ root: dir, path: join(dir, 'test.sqlite') })
   try {
     fn(db)
@@ -110,7 +110,7 @@ test('contact metadata can be listed and searched without read approval', () => 
 })
 
 test('backfilling an approved contact stores only matching recent archive messages', () => {
-  const dir = mkdtempSync(join(tmpdir(), 'whatsapp-mcp-test-'))
+  const dir = mkdtempSync(join(tmpdir(), 'whatsapp-cli-test-'))
   const db = openWhatsAppDb({ root: dir, path: join(dir, 'test.sqlite') })
   const now = new Date('2026-06-10T12:00:00.000Z')
 
@@ -161,7 +161,7 @@ test('backfilling an approved contact stores only matching recent archive messag
   }
 })
 
-test('revoking a contact hides existing messages from MCP reads', () => {
+test('revoking a contact hides existing messages from CLI reads', () => {
   withDb(db => {
     approveContact(db, '15551234567@s.whatsapp.net')
     persistMessageIfApproved(db, syntheticMessage(), 'test')
