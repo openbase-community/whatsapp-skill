@@ -1,6 +1,6 @@
 # whatsapp archive
 
-Connects to your WhatsApp account via [Baileys](https://baileys.wiki/docs/intro/) and writes every incoming message as a JSON file under `data/<YYYY-MM-DD>/`, mirroring the dated-folder layout used by `~/Developer/linkedin`.
+Connects to your WhatsApp account via [Baileys](https://baileys.wiki/docs/intro/) and stores approved-contact message history for local MCP access.
 
 ## First run
 
@@ -11,7 +11,59 @@ cd ~/Developer/whatsapp
 
 `run.sh` will `npm install` on first launch, then start the archiver. The terminal will display a QR code — open WhatsApp on your phone → **Settings → Linked devices → Link a device**, and scan it. Credentials are persisted to `./auth/` so subsequent runs reconnect without a new QR.
 
-## Output layout
+## MCP-approved SQLite store
+
+The MCP-facing store lives at `data/whatsapp-mcp.sqlite` by default. It is intentionally narrow:
+
+- Unapproved contacts/chats may be discovered as metadata, but their message bodies are not stored in SQLite.
+- Approved contacts/chats have recent archived messages backfilled into SQLite on approval, then future messages stored live.
+- MCP tools can list/search contact metadata by name and read the last N stored messages for an approved conversation.
+- Contact metadata tools return names, JIDs, and permission flags only; they do not return message bodies.
+- `send_message` queues a local outbound request only when the contact has send permission. Actual WhatsApp delivery only happens when the Baileys archiver is separately run with `WHATSAPP_SEND_OUTBOX=1`.
+
+Run the MCP server over stdio:
+
+```sh
+npm run mcp
+```
+
+Run the MCP server over Streamable HTTP:
+
+```sh
+npm run mcp:http
+```
+
+The HTTP endpoint defaults to `http://127.0.0.1:3055/mcp`, with a health check at `http://127.0.0.1:3055/health`. This is the preferred always-on MCP mode for the Mac mini because clients connect over network HTTP instead of spawning a stdio process.
+
+By default, the MCP exposes only:
+
+- `list_contacts`
+- `search_contacts`
+- `list_recent_messages`
+
+Additional tools are hidden unless explicitly enabled with environment flags:
+
+```sh
+WHATSAPP_MCP_CONTACT_LIST=1 npm run mcp  # adds list_approved_contacts
+WHATSAPP_MCP_SEND=1 npm run mcp          # adds send_message
+WHATSAPP_MCP_ADMIN=1 npm run mcp         # adds approve_contact and revoke_contact
+```
+
+The same flags apply to `npm run mcp:http`. Do not enable `WHATSAPP_MCP_SEND=1` unless you explicitly want MCP clients to queue outbound WhatsApp messages; the Mac mini launchd service below leaves it disabled.
+
+For direct LAN exposure, set `WHATSAPP_MCP_HOST=0.0.0.0` and set `WHATSAPP_MCP_TOKEN` in the local installed plist. Requests must then include `Authorization: Bearer <token>` or `X-WhatsApp-MCP-Token: <token>`. Without a token, the HTTP server refuses to bind to non-local hosts unless `WHATSAPP_MCP_ALLOW_UNAUTHENTICATED_LAN=1` is also set. A safer MacBook-to-Mac-mini setup is to keep the service bound to `127.0.0.1` on the Mac mini and connect through an SSH tunnel:
+
+```sh
+ssh -N -L 3055:127.0.0.1:3055 gabemontague@<mac-mini-hostname-or-ip>
+```
+
+Then point the MCP client on the MacBook at `http://127.0.0.1:3055/mcp`.
+
+This lets a Codex install expose only recent-message reads while keeping contact listing, send queueing, and approval changes behind an explicit config change. Sensitive tools are also marked with MCP annotations as non-read-only/destructive when enabled.
+
+Approving a contact backfills matching local JSON archive messages for that exact JID, then stores future messages live. Backfill defaults to the last 6 months and can be changed per approval with `backfill_months` or globally with `WHATSAPP_MCP_BACKFILL_MONTHS`. It still does not load messages for unapproved contacts.
+
+## Optional raw JSON archive
 
 ```
 data/
@@ -34,13 +86,19 @@ Each JSON file contains:
 
 `BufferJSON.replacer` is used so binary fields (media keys, etc.) round-trip cleanly.
 
+Raw JSON message archiving is disabled by default for the approval-gated flow. To also write approved-contact raw JSON files, run the archiver with:
+
+```sh
+WHATSAPP_ARCHIVE_RAW_JSON=1 npm start
+```
+
 ## Re-pairing
 
 If WhatsApp logs the device out (or you want a fresh start), the auth directory is owned by `_whatsapp` so the rm + restart needs to happen as that user (or via sudo):
 
 ```sh
 sudo rm -rf ~/Developer/whatsapp/auth
-sudo launchctl kickstart -k system/xyz.mindfulmakers.whatsapp-archive
+sudo launchctl kickstart -k system/com.gabemontague.whatsapp-archive
 # QR will land in launchd.out.log; also as a PNG at /tmp/pair-qr.png if writeable.
 # Scan with WhatsApp → Settings → Linked devices → Link a device.
 tail -f ~/Developer/whatsapp/logs/launchd.out.log
@@ -50,40 +108,68 @@ For interactive testing (skipping launchd), `run.sh` still works but you must in
 
 ```sh
 sudo -u _whatsapp /usr/bin/env -i HOME=/var/empty PATH=/opt/homebrew/bin:/usr/bin:/bin \
-  /Users/shams/.nvm/versions/node/v24.13.1/bin/node ~/Developer/whatsapp/index.js
+  /opt/homebrew/bin/node /Users/gabemontague/Developer/whatsapp/index.js
 ```
 
 ## Always-on (launchd as `_whatsapp`)
 
-The archiver runs as a **system LaunchDaemon** under a dedicated, hidden service user `_whatsapp` (UID 450). The plist lives at `/Library/LaunchDaemons/xyz.mindfulmakers.whatsapp-archive.plist` (root-owned, world-readable, mode 644). A versioned copy of the plist is in `launchd/` for reinstall reproducibility.
+The archiver runs as a **system LaunchDaemon** under a dedicated, hidden service user `_whatsapp` (UID 450). The installed plist lives at `/Library/LaunchDaemons/com.gabemontague.whatsapp-archive.plist` (root-owned, world-readable, mode 644). The repo tracks launchd templates; `scripts/install-launchd-services.sh` renders local plists into `.generated/launchd/` so usernames and absolute paths are not committed.
 
-`data/`, `auth/`, and `logs/` are owned by `_whatsapp:whatsapp-data` and chmod'd `750`. Membership: `shams` and `_whatsapp` are in `whatsapp-data`. Future AI-process users (`_linkedin`, etc.) without that group membership cannot read this archive. See **Lockdown** section below for setup.
+The network MCP server has its own Mac-mini-only LaunchDaemon:
+
+- label: `com.gabemontague.whatsapp-mcp`
+- generated plist: `.generated/launchd/com.gabemontague.whatsapp-mcp.plist`
+- installed plist: `/Library/LaunchDaemons/com.gabemontague.whatsapp-mcp.plist`
+- endpoint: `http://127.0.0.1:3055/mcp`
+- health: `http://127.0.0.1:3055/health`
+
+It runs as `_whatsapp:whatsapp-data`, reads the same approval-gated SQLite store as the stdio MCP, and exposes only `list_contacts`, `search_contacts`, and `list_recent_messages` unless the same `WHATSAPP_MCP_*` flags are added to the installed plist. It is intentionally not a MacBook Pro LaunchAgent; install it only on the Mac mini.
+
+`data/`, `auth/`, and `logs/` are owned by `_whatsapp:whatsapp-data` and chmod'd `750`. Membership: `gabemontague` and `_whatsapp` are in `whatsapp-data`. Future AI-process users (`_linkedin`, etc.) without that group membership cannot read this archive. See **Lockdown** section below for setup.
+
+For this machine, reinstall both system LaunchDaemons with:
+
+```sh
+cd ~/Developer/whatsapp
+sudo ./scripts/install-launchd-services.sh
+```
+
+The installer also makes sure `_whatsapp` can traverse `~/Developer/whatsapp` by adding it to `staff`, and makes sure the invoking user is in `whatsapp-data` for log reads.
 
 ```sh
 # Status (note: system/ domain, NOT gui/$UID/)
-launchctl print system/xyz.mindfulmakers.whatsapp-archive | head -40
+launchctl print system/com.gabemontague.whatsapp-archive | head -40
 
 # Stop / start (sudo because /Library/LaunchDaemons is root-owned)
-sudo launchctl bootout   system/xyz.mindfulmakers.whatsapp-archive
-sudo launchctl bootstrap system /Library/LaunchDaemons/xyz.mindfulmakers.whatsapp-archive.plist
+sudo launchctl bootout   system/com.gabemontague.whatsapp-archive
+sudo launchctl bootstrap system /Library/LaunchDaemons/com.gabemontague.whatsapp-archive.plist
 
 # Force restart
-sudo launchctl kickstart -k system/xyz.mindfulmakers.whatsapp-archive
+sudo launchctl kickstart -k system/com.gabemontague.whatsapp-archive
 
-# Tail live output (logs/ is _whatsapp-owned but shams can read via group)
+# Tail live output (logs/ is _whatsapp-owned but gabemontague can read via group)
 tail -f ~/Developer/whatsapp/logs/launchd.out.log
 ```
 
-The plist hardcodes the absolute path to node (`/Users/shams/.nvm/versions/node/v24.13.1/bin/node`). If you upgrade or remove that nvm version, edit the plist to point at a valid binary and re-bootstrap. (We can't shell-resolve nvm dynamically because `_whatsapp`'s `$HOME` is `/var/empty`.)
+Operate it:
+
+```sh
+launchctl print system/com.gabemontague.whatsapp-mcp | head -40
+sudo launchctl kickstart -k system/com.gabemontague.whatsapp-mcp
+curl http://127.0.0.1:3055/health
+tail -f ~/Developer/whatsapp/logs/mcp-http.out.log
+```
+
+The generated plists use `/opt/homebrew/bin/node` by default. If Homebrew moves, reinstall with `WHATSAPP_NODE_BIN=/path/to/node sudo ./scripts/install-launchd-services.sh`.
 
 ## Watchdog
 
-A LaunchAgent (`xyz.mindfulmakers.whatsapp-watchdog`, plist at `~/Library/LaunchAgents/...`) runs `watchdog.sh` every 3 hours under `shams` and posts a macOS notification if either:
+A LaunchAgent (`com.gabemontague.whatsapp-watchdog`, plist at `~/Library/LaunchAgents/...`) runs `watchdog.sh` every 3 hours under `gabemontague` and posts a macOS notification if either:
 
 - the archiver daemon is not in `state = running` (queries `system/...`), or
 - the newest message file under `data/<YYYY-MM-DD>/` is older than 36h (override with `WHATSAPP_WATCHDOG_MAX_AGE_HOURS`).
 
-The watchdog stays as a per-user Agent (not a Daemon) because Daemons can't post desktop notifications. It reads `data/` via `shams`'s membership in the `whatsapp-data` group. Watchdog logs go to `~/Library/Logs/whatsapp-watchdog/` (a shams-writable location off the locked-down archiver tree).
+The watchdog stays as a per-user Agent (not a Daemon) because Daemons can't post desktop notifications. It reads `data/` via `gabemontague`'s membership in the `whatsapp-data` group. Watchdog logs go to `~/Library/Logs/whatsapp-watchdog/` (a gabemontague-writable location off the locked-down archiver tree).
 
 ```sh
 # Run the check by hand
@@ -93,8 +179,8 @@ The watchdog stays as a per-user Agent (not a Daemon) because Daemons can't post
 tail -f ~/Library/Logs/whatsapp-watchdog/watchdog.log
 
 # Disable / enable the watchdog itself
-launchctl bootout gui/$(id -u)/xyz.mindfulmakers.whatsapp-watchdog
-launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/xyz.mindfulmakers.whatsapp-watchdog.plist
+launchctl bootout gui/$(id -u)/com.gabemontague.whatsapp-watchdog
+launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.gabemontague.whatsapp-watchdog.plist
 ```
 
 The first time the watchdog notifies, macOS may ask you to grant notification permission for `osascript` (System Settings → Notifications). Until you do, failures still get logged to `~/Library/Logs/whatsapp-watchdog/watchdog.log`.
@@ -121,7 +207,7 @@ Hooks fire only on **live** messages — never on `messaging-history.set` backfi
 After dropping a new hook in, kickstart the agent so it picks it up:
 
 ```sh
-launchctl kickstart -k gui/$(id -u)/xyz.mindfulmakers.whatsapp-archive
+sudo launchctl kickstart -k system/com.gabemontague.whatsapp-archive
 tail -f ~/Developer/whatsapp/logs/launchd.out.log   # look for `[hooks] loaded N: ...`
 ```
 
@@ -141,7 +227,7 @@ EOF
 
 ## Lockdown (one-time setup, reproducible from scratch)
 
-The archive contains your full WhatsApp message history; we lock it down so other process-users on this machine (e.g. future `_linkedin`, `_email` etc.) cannot read it. Pattern: dedicated service user owns the runtime dirs, a small read group includes only `shams` and the service user.
+The archive contains your full WhatsApp message history; we lock it down so other process-users on this machine (e.g. future `_linkedin`, `_email` etc.) cannot read it. Pattern: dedicated service user owns the runtime dirs, a small read group includes only `gabemontague` and the service user.
 
 ```sh
 # 1. Create the service user (UID 450, hidden from login picker, no shell, no home).
@@ -156,32 +242,41 @@ sudo dscl . -create /Users/_whatsapp IsHidden 1
 
 # 2. Create the read group + memberships.
 sudo dseditgroup -o create -i 450 -r "WhatsApp data readers" whatsapp-data
-sudo dseditgroup -o edit -a shams      -t user whatsapp-data
+sudo dseditgroup -o edit -a gabemontague -t user whatsapp-data
 sudo dseditgroup -o edit -a _whatsapp  -t user whatsapp-data
-sudo dseditgroup -o edit -a _whatsapp  -t user staff   # so _whatsapp can traverse /Users/shams to reach node + source
+sudo dseditgroup -o edit -a _whatsapp  -t user staff   # so _whatsapp can traverse /Users/gabemontague to reach node + source
 
 # 3. Transfer ownership and lock perms.
 sudo chown -R _whatsapp:whatsapp-data data/ auth/ logs/
 sudo chmod  -R u=rwX,g=rX,o= data/ auth/ logs/
 
-# 4. Install the LaunchDaemon (the plist in launchd/ is identical to /Library/LaunchDaemons/...).
-sudo cp launchd/xyz.mindfulmakers.whatsapp-archive.plist /Library/LaunchDaemons/
-sudo chown root:wheel /Library/LaunchDaemons/xyz.mindfulmakers.whatsapp-archive.plist
-sudo chmod 644       /Library/LaunchDaemons/xyz.mindfulmakers.whatsapp-archive.plist
-sudo launchctl bootstrap system /Library/LaunchDaemons/xyz.mindfulmakers.whatsapp-archive.plist
-
-# 5. Install the watchdog Agent.
-cp launchd/xyz.mindfulmakers.whatsapp-watchdog.plist ~/Library/LaunchAgents/
-launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/xyz.mindfulmakers.whatsapp-watchdog.plist
+# 4. Render and install the archive daemon, MCP daemon, and watchdog agent.
+sudo ./scripts/install-launchd-services.sh
 ```
 
-After step 2, `shams`'s group membership change won't show up in existing terminal sessions until you log out and back in. Launchd-spawned processes pick it up immediately.
+After step 2, `gabemontague`'s group membership change won't show up in existing terminal sessions until you log out and back in. Launchd-spawned processes pick it up immediately.
 
-To add another locked-down archiver later (e.g. `_linkedin`), repeat the pattern with `_linkedin` + `linkedin-data` group; `shams` joins both read groups but the two service users never join each other's.
+To add another locked-down archiver later (e.g. `_linkedin`), repeat the pattern with `_linkedin` + `linkedin-data` group; `gabemontague` joins both read groups but the two service users never join each other's.
+
+## Media downloads
+
+When `WHATSAPP_ARCHIVE_RAW_JSON=1` is enabled, **live inbound approved-contact** messages only (`messages.upsert:notify`, not `fromMe`) also fetch the actual bytes for:
+
+- `audioMessage` (voice notes / push-to-talk + sent audio files) → `.ogg` / `.mp3` / `.m4a` based on mimetype
+- `imageMessage` → `.jpg` / `.png` / `.webp` / `.gif`
+
+Skipped: videos (size), documents, stickers, history backfill (URLs expire after ~14 days so backfilling is a lost cause). Files land alongside the JSON in `data/<YYYY-MM-DD>/`, sharing the same base name:
+
+```
+data/2026-05-04/14-23-07-1234567890_s.whatsapp.net-3EB0ABC.json
+data/2026-05-04/14-23-07-1234567890_s.whatsapp.net-3EB0ABC.ogg
+```
+
+Downloads are fire-and-forget (don't block message ingest). Failures (expired URL, network error) get logged via `[media …] download failed` and the JSON archive is unaffected. To download outbound or older media, do it from a hook by calling `downloadMediaMessage(msg, ...)` directly.
 
 ## Notes
 
 - `markOnlineOnConnect: false` keeps your phone's "online" indicator off while the archiver runs.
 - `syncFullHistory: true` requests the full history sync; messages arrive via `messaging-history.set` and are saved alongside live ones.
 - `run.sh` is the interactive entry point (prints QR to terminal, opens `pair-qr.png` in Preview). After lockdown, prefer the `sudo -u _whatsapp` invocation in **Re-pairing** above.
-- `auth/`, `data/`, `logs/`, `node_modules/`, and `hooks/` are all gitignored. `launchd/` plists are tracked so the lockdown is reproducible from the repo.
+- `auth/`, `data/`, `logs/`, `node_modules/`, `hooks/`, `pair-qr.png`, and generated launchd plists are all gitignored. Launchd templates are tracked so the lockdown is reproducible without committing machine-local usernames or paths.

@@ -3,7 +3,7 @@
 <plist version="1.0">
 <dict>
     <key>Label</key>
-    <string>xyz.mindfulmakers.whatsapp-archive</string>
+    <string>{{MCP_LABEL}}</string>
 
     <key>UserName</key>
     <string>_whatsapp</string>
@@ -12,22 +12,23 @@
 
     <key>ProgramArguments</key>
     <array>
-        <string>/bin/zsh</string>
-        <string>-c</string>
-        <string>export PATH=&quot;/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin&quot;; exec /Users/shams/.nvm/versions/node/v24.13.1/bin/node /Users/shams/Developer/whatsapp/index.js</string>
+        <string>{{NODE_BIN}}</string>
+        <string>{{REPO_DIR}}/mcp-http-server.js</string>
     </array>
 
     <key>WorkingDirectory</key>
-    <string>/Users/shams/Developer/whatsapp</string>
+    <string>{{REPO_DIR}}</string>
 
     <key>EnvironmentVariables</key>
     <dict>
-        <key>QR_OPEN</key>
-        <string>0</string>
-        <key>LOG_LEVEL</key>
-        <string>warn</string>
         <key>HOME</key>
         <string>/var/empty</string>
+        <key>LOG_LEVEL</key>
+        <string>warn</string>
+        <key>WHATSAPP_MCP_HOST</key>
+        <string>127.0.0.1</string>
+        <key>WHATSAPP_MCP_PORT</key>
+        <string>3055</string>
     </dict>
 
     <key>RunAtLoad</key>
@@ -40,10 +41,10 @@
     <integer>30</integer>
 
     <key>StandardOutPath</key>
-    <string>/Users/shams/Developer/whatsapp/logs/launchd.out.log</string>
+    <string>{{REPO_DIR}}/logs/mcp-http.out.log</string>
 
     <key>StandardErrorPath</key>
-    <string>/Users/shams/Developer/whatsapp/logs/launchd.err.log</string>
+    <string>{{REPO_DIR}}/logs/mcp-http.err.log</string>
 
     <key>ProcessType</key>
     <string>Background</string>

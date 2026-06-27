@@ -6,16 +6,21 @@
   "main": "index.js",
   "type": "module",
   "scripts": {
-    "start": "node index.js"
+    "start": "node index.js",
+    "mcp": "node mcp-server.js",
+    "mcp:http": "node mcp-http-server.js",
+    "test": "node --test"
   },
   "engines": {
-    "node": ">=20"
+    "node": ">=24"
   },
   "dependencies": {
     "@hapi/boom": "^10.0.1",
+    "@modelcontextprotocol/sdk": "^1.29.0",
     "@whiskeysockets/baileys": "^6.17.16",
     "pino": "^9.5.0",
     "qrcode": "^1.5.4",
-    "qrcode-terminal": "^0.12.0"
+    "qrcode-terminal": "^0.12.0",
+    "zod": "^3.25.76"
   }
 }

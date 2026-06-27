@@ -1,6 +1,7 @@
-import { mkdirSync, writeFileSync, readFileSync, existsSync, readdirSync } from 'node:fs'
+import { mkdirSync, writeFileSync, readFileSync, existsSync, readdirSync, createWriteStream } from 'node:fs'
 import { join, dirname } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
+import { pipeline } from 'node:stream/promises'
 import qrcode from 'qrcode-terminal'
 import QRCode from 'qrcode'
 import { spawn } from 'node:child_process'
@@ -12,7 +13,18 @@ import baileys, {
   makeCacheableSignalKeyStore,
   DisconnectReason,
   BufferJSON,
+  downloadMediaMessage,
 } from '@whiskeysockets/baileys'
+import {
+  openWhatsAppDb,
+  persistMessageIfApproved,
+  upsertContacts as upsertDbContacts,
+  upsertChats as upsertDbChats,
+  isReadApproved,
+  listQueuedOutboundMessages,
+  markOutboundFailed,
+  markOutboundSent,
+} from './lib/whatsapp-db.js'
 
 const makeWASocket = baileys.default ?? baileys
 
@@ -23,8 +35,11 @@ const HOOKS_DIR = join(ROOT, 'hooks')
 const CONTACTS_FILE = join(DATA_DIR, 'contacts.json')
 const CHATS_FILE = join(DATA_DIR, 'chats.json')
 const GROUPS_DIR = join(DATA_DIR, 'groups')
+const WRITE_RAW_JSON = process.env.WHATSAPP_ARCHIVE_RAW_JSON === '1'
+const SEND_OUTBOX = process.env.WHATSAPP_SEND_OUTBOX === '1'
 
 const logger = pino({ level: process.env.LOG_LEVEL ?? 'warn' })
+const db = openWhatsAppDb({ root: ROOT })
 
 function pad(n) {
   return String(n).padStart(2, '0')
@@ -72,6 +87,7 @@ setInterval(() => { flushContacts(); flushChats() }, 10_000).unref()
 
 function upsertContacts(arr) {
   if (!Array.isArray(arr) || !arr.length) return
+  upsertDbContacts(db, arr)
   for (const c of arr) {
     if (!c?.id) continue
     contacts[c.id] = { ...contacts[c.id], ...c }
@@ -80,6 +96,7 @@ function upsertContacts(arr) {
 }
 function upsertChats(arr) {
   if (!Array.isArray(arr) || !arr.length) return
+  upsertDbChats(db, arr)
   for (const c of arr) {
     if (!c?.id) continue
     chatsState[c.id] = { ...chatsState[c.id], ...c }
@@ -91,6 +108,56 @@ function writeGroup(meta) {
   mkdirSync(GROUPS_DIR, { recursive: true })
   const file = join(GROUPS_DIR, `${safe(meta.id)}.json`)
   writeFileSync(file, JSON.stringify({ capturedAt: new Date().toISOString(), metadata: meta }, BufferJSON.replacer, 2))
+}
+
+function mediaExt(mimetype) {
+  if (!mimetype) return 'bin'
+  const mt = String(mimetype).toLowerCase().split(';')[0].trim()
+  // Full prefix match so video/mp4 doesn't get bucketed with audio/mp4 (m4a).
+  switch (mt) {
+    case 'image/jpeg': case 'image/jpg':  return 'jpg'
+    case 'image/png':                      return 'png'
+    case 'image/webp':                     return 'webp'
+    case 'image/gif':                      return 'gif'
+    case 'audio/ogg':                      return 'ogg'
+    case 'audio/mpeg': case 'audio/mp3':  return 'mp3'
+    case 'audio/aac':                      return 'aac'
+    case 'audio/mp4':                      return 'm4a'
+    case 'video/mp4':                      return 'mp4'
+    case 'video/webm':                     return 'webm'
+    default:                               return 'bin'
+  }
+}
+
+// Download images and voice notes (audio messages, including push-to-talk)
+// for live inbound messages. Also includes WhatsApp-style GIFs, which arrive
+// as `videoMessage` with `gifPlayback: true` (WA transcodes GIFs to small MP4s).
+// Skips full-length videos, documents, stickers — and skips history backfill
+// since WhatsApp media URLs expire after ~14 days anyway.
+async function downloadInboundMedia(msg, sock, jsonFile) {
+  // Round-trip via JSON because protobuf-getter access on the live msg
+  // doesn't always materialize nested fields at upsert time.
+  const flat = JSON.parse(JSON.stringify(msg))
+  const audio = flat.message?.audioMessage
+  const image = flat.message?.imageMessage
+  const video = flat.message?.videoMessage
+  const gifAsVideo = video?.gifPlayback ? video : null
+  if (!audio && !image && !gifAsVideo) return
+  const kind = audio ? 'audio' : image ? 'image' : 'gif'
+  const meta = audio ?? image ?? gifAsVideo
+  const mediaFile = jsonFile.replace(/\.json$/, '.' + mediaExt(meta.mimetype))
+  try {
+    const stream = await downloadMediaMessage(
+      msg,
+      'stream',
+      {},
+      { logger, reuploadRequest: sock.updateMediaMessage },
+    )
+    await pipeline(stream, createWriteStream(mediaFile))
+    console.log(`[media ${kind}] ${meta.fileLength ?? '?'}B → ${mediaFile}`)
+  } catch (err) {
+    console.error(`[media ${kind}] download failed for ${jsonFile}: ${err.message ?? err}`)
+  }
 }
 
 function writeMessage(msg, sourceTag) {
@@ -107,6 +174,39 @@ function writeMessage(msg, sourceTag) {
   }
   writeFileSync(file, JSON.stringify(payload, BufferJSON.replacer, 2))
   return file
+}
+
+function archiveMessage(msg, sourceTag) {
+  const result = persistMessageIfApproved(db, msg, sourceTag)
+  if (!result.saved) return { ...result, file: null }
+  const file = WRITE_RAW_JSON ? writeMessage(msg, sourceTag) : null
+  return { ...result, file }
+}
+
+function approvedPreview(msg) {
+  return (
+    msg.message?.conversation ??
+    msg.message?.extendedTextMessage?.text ??
+    Object.keys(msg.message ?? {})[0] ??
+    '(no body)'
+  )
+}
+
+function startOutboxSender(sock) {
+  if (!SEND_OUTBOX) return
+  setInterval(async () => {
+    const queued = listQueuedOutboundMessages(db, { limit: 10 })
+    for (const item of queued) {
+      try {
+        await sock.sendMessage(item.chat_id, { text: item.text })
+        markOutboundSent(db, item.id)
+        console.log(`[outbox] sent ${item.id} to ${item.chat_id}`)
+      } catch (err) {
+        markOutboundFailed(db, item.id, err?.message ?? err)
+        console.error(`[outbox] failed ${item.id}: ${err?.message ?? err}`)
+      }
+    }
+  }, 5_000).unref()
 }
 
 async function loadHooks() {
@@ -148,6 +248,7 @@ async function start() {
   })
 
   const hookCtx = { contacts, chats: chatsState, sock, root: ROOT, logger }
+  startOutboxSender(sock)
 
   sock.ev.on('creds.update', saveCreds)
 
@@ -187,28 +288,36 @@ async function start() {
 
   sock.ev.on('messages.upsert', async ({ messages, type }) => {
     for (const m of messages) {
+      let file = null
+      const chatId = m?.key?.remoteJid
       try {
-        const file = writeMessage(m, `messages.upsert:${type}`)
-        const preview =
-          m.message?.conversation ??
-          m.message?.extendedTextMessage?.text ??
-          Object.keys(m.message ?? {})[0] ??
-          '(no body)'
-        console.log(`[upsert ${type}] ${m.key.remoteJid} → ${file}  ${String(preview).slice(0, 80)}`)
+        const result = archiveMessage(m, `messages.upsert:${type}`)
+        file = result.file
+        if (result.saved) {
+          const location = file ?? 'sqlite'
+          console.log(`[upsert ${type}] ${chatId} → ${location}  ${String(approvedPreview(m)).slice(0, 80)}`)
+        } else {
+          console.log(`[upsert ${type}] ${chatId ?? 'unknown'} skipped (${result.reason})`)
+        }
       } catch (err) {
         console.error('write failed', err)
       }
 
-      if (type === 'notify' && !m.key.fromMe && hooks.length) {
-        const ctx = { ...hookCtx, type }
-        for (const hook of hooks) {
-          try {
-            if (await hook.match(m, ctx)) {
-              await hook.run(m, ctx)
-              console.log(`[hook] ${hook.name} fired for ${m.key.remoteJid}`)
+      if (type === 'notify' && !m.key.fromMe && isReadApproved(db, chatId)) {
+        // Fire-and-forget; don't block the next message on a slow download.
+        if (file) downloadInboundMedia(m, sock, file).catch(() => {})
+
+        if (hooks.length) {
+          const ctx = { ...hookCtx, type }
+          for (const hook of hooks) {
+            try {
+              if (await hook.match(m, ctx)) {
+                await hook.run(m, ctx)
+                console.log(`[hook] ${hook.name} fired for ${m.key.remoteJid}`)
+              }
+            } catch (err) {
+              console.error('[hook]', hook.name, 'failed', err)
             }
-          } catch (err) {
-            console.error('[hook]', hook.name, 'failed', err)
           }
         }
       }
@@ -221,8 +330,7 @@ async function start() {
     let n = 0
     for (const m of messages ?? []) {
       try {
-        writeMessage(m, `messaging-history.set:${syncType}`)
-        n++
+        if (archiveMessage(m, `messaging-history.set:${syncType}`).saved) n++
       } catch (err) {
         console.error('history write failed', err)
       }

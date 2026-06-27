@@ -1,7 +1,7 @@
 #!/bin/zsh
 # watchdog.sh — health check for the WhatsApp archiver LaunchAgent.
 # Posts a macOS notification on failure and appends a one-line status to
-# logs/watchdog.log. Wired to launchd via xyz.mindfulmakers.whatsapp-watchdog.plist.
+# logs/watchdog.log. Wired to launchd via com.gabemontague.whatsapp-watchdog.plist.
 #
 # Failure conditions:
 #   1. The archiver agent is not in state=running.
@@ -9,11 +9,11 @@
 
 set -u
 DIR="${0:A:h}"
-# Watchdog runs as shams; archiver logs/ is _whatsapp-owned (mode 750), so write
-# our own log under ~/Library/Logs (shams-writable, off the locked-down tree).
+# Watchdog runs as the logged-in user; archiver logs/ is _whatsapp-owned
+# (mode 750), so write our own log under ~/Library/Logs.
 LOG_DIR="$HOME/Library/Logs/whatsapp-watchdog"
 LOG="$LOG_DIR/watchdog.log"
-LABEL="xyz.mindfulmakers.whatsapp-archive"
+LABEL="com.gabemontague.whatsapp-archive"
 MAX_AGE_HOURS="${WHATSAPP_WATCHDOG_MAX_AGE_HOURS:-36}"
 mkdir -p "$LOG_DIR"
 
