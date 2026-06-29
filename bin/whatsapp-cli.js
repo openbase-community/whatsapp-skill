@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { spawnSync } from 'node:child_process'
 import { dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { backfillApprovedContactFromArchive } from '../lib/whatsapp-backfill.js'
@@ -54,6 +55,16 @@ async function main(argv = process.argv.slice(2)) {
 
       case 'approve': {
         requireArgs(command, args, 1)
+        requestOpenbaseApproval({
+          action: 'approve-contact',
+          description: `Approve WhatsApp contact ${args[0]}`,
+          command: formatCommand(command, args),
+          details: {
+            contact_id: args[0],
+            read_allowed: String(!options['no-read']),
+            send_allowed: String(Boolean(options.send)),
+          },
+        })
         const contact = approveContact(db, args[0], {
           displayName: options.name ?? null,
           readAllowed: !options['no-read'],
@@ -76,6 +87,15 @@ async function main(argv = process.argv.slice(2)) {
 
       case 'send':
         requireArgs(command, args, 2)
+        requestOpenbaseApproval({
+          action: 'send-message',
+          description: `Queue a WhatsApp message to ${args[0]}`,
+          command: formatCommand(command, args),
+          details: {
+            contact_id: args[0],
+            message_preview: args.slice(1).join(' ').slice(0, 160),
+          },
+        })
         return output({
           queued: createOutboundMessage(db, args[0], args.slice(1).join(' ')),
           note: 'Queued locally. The archiver sends queued messages only when WHATSAPP_SEND_OUTBOX=1 is set.',
@@ -168,6 +188,57 @@ function intOption(value, fallback) {
   const n = Number(value)
   if (!Number.isFinite(n) || n < 0) return fallback
   return Math.trunc(n)
+}
+
+function requestOpenbaseApproval({ action, description, command, details }) {
+  if (process.env.WHATSAPP_SKIP_OPENBASE_APPROVAL === '1') return
+
+  const approvalCommand = process.env.OPENBASE_CODER_APPROVAL_COMMAND ?? 'openbase-coder'
+  const timeoutSeconds = process.env.OPENBASE_CODER_APPROVAL_TIMEOUT_SECONDS ?? '300'
+  const approvalArgs = [
+    'user',
+    'approval',
+    'request',
+    '--skill',
+    'whatsapp-cli',
+    '--action',
+    action,
+    '--description',
+    description,
+    '--timeout',
+    timeoutSeconds,
+  ]
+  if (command) approvalArgs.push('--command', command)
+  for (const [key, value] of Object.entries(details ?? {})) {
+    approvalArgs.push('--detail', `${key}=${value}`)
+  }
+
+  const env = {
+    ...process.env,
+    PATH: [
+      '/opt/homebrew/bin',
+      '/usr/local/bin',
+      '/usr/bin',
+      '/bin',
+      process.env.PATH,
+    ].filter(Boolean).join(':'),
+  }
+  const result = spawnSync(approvalCommand, approvalArgs, {
+    encoding: 'utf8',
+    env,
+    stdio: ['ignore', 'pipe', 'pipe'],
+  })
+  if (result.error) {
+    throw new Error(`Openbase Coder approval failed: ${result.error.message}`)
+  }
+  if (result.status !== 0) {
+    const message = (result.stderr || result.stdout || '').trim()
+    throw new Error(message || 'Openbase Coder approval was not accepted.')
+  }
+}
+
+function formatCommand(command, args) {
+  return ['whatsapp-local', command, ...args].join(' ')
 }
 
 function printHelp() {

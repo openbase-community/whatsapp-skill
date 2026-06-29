@@ -1,7 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { execFileSync } from 'node:child_process'
-import { mkdtempSync, rmSync } from 'node:fs'
+import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import {
@@ -28,6 +28,14 @@ function withTempDb(fn) {
 function runCli(dbPath, args) {
   return execFileSync(process.execPath, [CLI, '--db', dbPath, ...args], {
     encoding: 'utf8',
+    env: { ...process.env, WHATSAPP_SKIP_OPENBASE_APPROVAL: '1' },
+  })
+}
+
+function runCliWithEnv(dbPath, args, env) {
+  return execFileSync(process.execPath, [CLI, '--db', dbPath, ...args], {
+    encoding: 'utf8',
+    env: { ...process.env, ...env },
   })
 }
 
@@ -84,5 +92,40 @@ test('CLI queues sends only for send-approved contacts', () => {
     assert.equal(result.queued.chat_id, chatId)
     assert.equal(result.queued.text, 'hello there')
     assert.equal(result.queued.status, 'queued')
+  })
+})
+
+test('CLI asks Openbase Coder before queueing a send', () => {
+  withTempDb(({ root, dbPath, db }) => {
+    const chatId = '15551234567@s.whatsapp.net'
+    const approvalBin = join(root, 'openbase-coder')
+    const approvalArgsPath = join(root, 'approval-args.txt')
+    writeFileSync(
+      approvalBin,
+      `#!/bin/sh\nprintf '%s\\n' "$@" > "${approvalArgsPath}"\n`,
+    )
+    chmodSync(approvalBin, 0o755)
+    approveContact(db, chatId, { readAllowed: true, sendAllowed: true })
+
+    const result = JSON.parse(runCliWithEnv(
+      dbPath,
+      ['send', chatId, 'hello', 'there', '--json'],
+      {
+        PATH: `${root}:${process.env.PATH}`,
+        OPENBASE_CODER_APPROVAL_TIMEOUT_SECONDS: '5',
+      },
+    ))
+
+    assert.equal(result.queued.text, 'hello there')
+    const approvalArgs = readFileSync(approvalArgsPath, 'utf8').trim().split('\n')
+    assert.deepEqual(approvalArgs.slice(0, 5), [
+      'user',
+      'approval',
+      'request',
+      '--skill',
+      'whatsapp-cli',
+    ])
+    assert.ok(approvalArgs.includes('send-message'))
+    assert.ok(approvalArgs.includes(`contact_id=${chatId}`))
   })
 })
