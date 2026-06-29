@@ -227,7 +227,7 @@ sudo dscl . -create /Users/_whatsapp IsHidden 1
 sudo dseditgroup -o create -i 450 -r "WhatsApp data readers" whatsapp-data
 sudo dseditgroup -o edit -a gabemontague -t user whatsapp-data
 sudo dseditgroup -o edit -a _whatsapp  -t user whatsapp-data
-sudo dseditgroup -o edit -a _whatsapp  -t user staff   # so _whatsapp can traverse /Users/gabemontague to reach node + source
+sudo dseditgroup -o edit -a _whatsapp  -t user staff   # so _whatsapp can traverse the user home to reach node + source
 
 # 3. Transfer ownership and lock perms.
 sudo chown -R _whatsapp:whatsapp-data ~/.whatsapp/data ~/.whatsapp/auth ~/.whatsapp/logs
