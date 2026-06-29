@@ -1,17 +1,16 @@
 #!/bin/zsh
 # watchdog.sh — health check for the WhatsApp archiver LaunchAgent.
-# Posts a macOS notification on failure and appends a one-line status to
-# logs/watchdog.log. Wired to launchd via com.gabemontague.whatsapp-watchdog.plist.
+# Posts a macOS notification on failure and appends a one-line status to the
+# runtime logs directory. Wired to launchd via com.gabemontague.whatsapp-watchdog.plist.
 #
 # Failure conditions:
 #   1. The archiver agent is not in state=running.
-#   2. The newest file under data/ is older than $MAX_AGE_HOURS (default 36h).
+#   2. The approved catalog heartbeat is older than $MAX_AGE_HOURS (default 36h).
 
 set -u
 DIR="${0:A:h}"
-# Watchdog runs as the logged-in user; archiver logs/ is _whatsapp-owned
-# (mode 750), so write our own log under ~/Library/Logs.
-LOG_DIR="$HOME/Library/Logs/whatsapp-watchdog"
+RUNTIME_DIR="${WHATSAPP_RUNTIME_HOME:-$HOME/.whatsapp}"
+LOG_DIR="$RUNTIME_DIR/logs"
 LOG="$LOG_DIR/watchdog.log"
 LABEL="com.gabemontague.whatsapp-archive"
 MAX_AGE_HOURS="${WHATSAPP_WATCHDOG_MAX_AGE_HOURS:-36}"
@@ -33,32 +32,22 @@ if [[ "$state" != "running" ]]; then
   exit 1
 fi
 
-# 2. newest message file age. data/ uses YYYY-MM-DD subdirs (alongside files
-# like contacts.json and chats.json); pick the most-recently-touched *directory*,
-# then the most-recently-touched file inside it.
-newest_dir="$(/usr/bin/find "$DIR/data" -mindepth 1 -maxdepth 1 -type d -print0 2>/dev/null \
-  | /usr/bin/xargs -0 /usr/bin/stat -f '%m %N' 2>/dev/null \
-  | /usr/bin/sort -rn \
-  | /usr/bin/head -1 \
-  | /usr/bin/awk '{print $2}')"
-if [[ -z "$newest_dir" ]]; then
-  notify "data/ has no message subdirectories"
+# 2. heartbeat freshness. The raw archive is intentionally protected from this
+# user, so the archiver writes a non-sensitive status file in data/catalog/.
+heartbeat="$RUNTIME_DIR/data/catalog/heartbeat.json"
+if [[ ! -f "$heartbeat" ]]; then
+  notify "missing WhatsApp heartbeat"
   exit 1
 fi
-newest_file="$(/bin/ls -t "$newest_dir/" 2>/dev/null | /usr/bin/head -1)"
-if [[ -z "$newest_file" ]]; then
-  notify "newest data dir ($newest_dir) is empty"
-  exit 1
-fi
-newest_mtime="$(/usr/bin/stat -f '%m' "$newest_dir/$newest_file")"
+newest_mtime="$(/usr/bin/stat -f '%m' "$heartbeat")"
 now="$(/bin/date +%s)"
 age_sec=$(( now - newest_mtime ))
 max_sec=$(( MAX_AGE_HOURS * 3600 ))
 if (( age_sec > max_sec )); then
   hrs=$(( age_sec / 3600 ))
-  notify "no new messages for ${hrs}h (threshold ${MAX_AGE_HOURS}h) — auth may have expired"
+  notify "WhatsApp heartbeat stale for ${hrs}h (threshold ${MAX_AGE_HOURS}h) — auth may have expired"
   exit 1
 fi
 
-echo "[$(ts)] OK state=running newest=${newest_dir}/${newest_file} age=$(( age_sec / 60 ))m" >> "$LOG"
+echo "[$(ts)] OK state=running heartbeat=$heartbeat age=$(( age_sec / 60 ))m" >> "$LOG"
 exit 0

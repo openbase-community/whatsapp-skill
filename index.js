@@ -20,26 +20,34 @@ import {
   persistMessageIfApproved,
   upsertContacts as upsertDbContacts,
   upsertChats as upsertDbChats,
+  defaultArchiveDir,
   isReadApproved,
   listQueuedOutboundMessages,
   markOutboundFailed,
   markOutboundSent,
+  writeHeartbeat,
 } from './lib/whatsapp-db.js'
+import { defaultRuntimeRoot } from './lib/whatsapp-paths.js'
 
 const makeWASocket = baileys.default ?? baileys
 
 const ROOT = dirname(fileURLToPath(import.meta.url))
-const DATA_DIR = join(ROOT, 'data')
-const AUTH_DIR = join(ROOT, 'auth')
+const RUNTIME_ROOT = defaultRuntimeRoot()
+const DATA_DIR = join(RUNTIME_ROOT, 'data')
+const PROTECTED_DIR = join(DATA_DIR, 'protected')
+const STATE_DIR = join(PROTECTED_DIR, 'state')
+const ARCHIVE_DIR = defaultArchiveDir(RUNTIME_ROOT)
+const AUTH_DIR = join(RUNTIME_ROOT, 'auth')
 const HOOKS_DIR = join(ROOT, 'hooks')
-const CONTACTS_FILE = join(DATA_DIR, 'contacts.json')
-const CHATS_FILE = join(DATA_DIR, 'chats.json')
-const GROUPS_DIR = join(DATA_DIR, 'groups')
-const WRITE_RAW_JSON = process.env.WHATSAPP_ARCHIVE_RAW_JSON === '1'
+const CONTACTS_FILE = join(STATE_DIR, 'contacts.json')
+const CHATS_FILE = join(STATE_DIR, 'chats.json')
+const GROUPS_DIR = join(STATE_DIR, 'groups')
+const WRITE_RAW_JSON = process.env.WHATSAPP_ARCHIVE_RAW_JSON !== '0'
 const SEND_OUTBOX = process.env.WHATSAPP_SEND_OUTBOX === '1'
 
 const logger = pino({ level: process.env.LOG_LEVEL ?? 'warn' })
-const db = openWhatsAppDb({ root: ROOT })
+const db = openWhatsAppDb({ root: RUNTIME_ROOT })
+writeHeartbeat(RUNTIME_ROOT, { status: 'starting' })
 
 function pad(n) {
   return String(n).padStart(2, '0')
@@ -73,13 +81,13 @@ let chatsDirty = false
 
 function flushContacts() {
   if (!contactsDirty) return
-  mkdirSync(DATA_DIR, { recursive: true })
+  mkdirSync(STATE_DIR, { recursive: true })
   writeFileSync(CONTACTS_FILE, JSON.stringify(contacts, BufferJSON.replacer, 2))
   contactsDirty = false
 }
 function flushChats() {
   if (!chatsDirty) return
-  mkdirSync(DATA_DIR, { recursive: true })
+  mkdirSync(STATE_DIR, { recursive: true })
   writeFileSync(CHATS_FILE, JSON.stringify(chatsState, BufferJSON.replacer, 2))
   chatsDirty = false
 }
@@ -87,7 +95,7 @@ setInterval(() => { flushContacts(); flushChats() }, 10_000).unref()
 
 function upsertContacts(arr) {
   if (!Array.isArray(arr) || !arr.length) return
-  upsertDbContacts(db, arr)
+  upsertDbContacts(db, arr, { root: RUNTIME_ROOT })
   for (const c of arr) {
     if (!c?.id) continue
     contacts[c.id] = { ...contacts[c.id], ...c }
@@ -96,7 +104,7 @@ function upsertContacts(arr) {
 }
 function upsertChats(arr) {
   if (!Array.isArray(arr) || !arr.length) return
-  upsertDbChats(db, arr)
+  upsertDbChats(db, arr, { root: RUNTIME_ROOT })
   for (const c of arr) {
     if (!c?.id) continue
     chatsState[c.id] = { ...chatsState[c.id], ...c }
@@ -162,7 +170,7 @@ async function downloadInboundMedia(msg, sock, jsonFile) {
 
 function writeMessage(msg, sourceTag) {
   const { date, time } = tsParts(msg?.messageTimestamp)
-  const dir = join(DATA_DIR, date)
+  const dir = join(ARCHIVE_DIR, date)
   mkdirSync(dir, { recursive: true })
   const chat = safe(msg?.key?.remoteJid)
   const id = safe(msg?.key?.id)
@@ -177,9 +185,14 @@ function writeMessage(msg, sourceTag) {
 }
 
 function archiveMessage(msg, sourceTag) {
-  const result = persistMessageIfApproved(db, msg, sourceTag)
-  if (!result.saved) return { ...result, file: null }
   const file = WRITE_RAW_JSON ? writeMessage(msg, sourceTag) : null
+  const result = persistMessageIfApproved(db, msg, sourceTag, { root: RUNTIME_ROOT })
+  if (!result.saved) return { ...result, file }
+    writeHeartbeat(RUNTIME_ROOT, {
+    status: 'running',
+    last_message_at: new Date().toISOString(),
+    last_saved_chat_id: result.chatId,
+  })
   return { ...result, file }
 }
 
@@ -200,9 +213,11 @@ function startOutboxSender(sock) {
       try {
         await sock.sendMessage(item.chat_id, { text: item.text })
         markOutboundSent(db, item.id)
+        writeHeartbeat(RUNTIME_ROOT, { status: 'running', last_outbox_sent_at: new Date().toISOString() })
         console.log(`[outbox] sent ${item.id} to ${item.chat_id}`)
       } catch (err) {
         markOutboundFailed(db, item.id, err?.message ?? err)
+        writeHeartbeat(RUNTIME_ROOT, { status: 'running', last_outbox_error_at: new Date().toISOString() })
         console.error(`[outbox] failed ${item.id}: ${err?.message ?? err}`)
       }
     }
@@ -247,16 +262,17 @@ async function start() {
     getMessage: async () => undefined,
   })
 
-  const hookCtx = { contacts, chats: chatsState, sock, root: ROOT, logger }
+  const hookCtx = { contacts, chats: chatsState, sock, root: ROOT, runtimeRoot: RUNTIME_ROOT, logger }
   startOutboxSender(sock)
 
   sock.ev.on('creds.update', saveCreds)
 
   sock.ev.on('connection.update', ({ connection, lastDisconnect, qr }) => {
     if (qr) {
+      writeHeartbeat(RUNTIME_ROOT, { status: 'pairing', connection: 'qr' })
       console.log('\nScan this QR with WhatsApp → Settings → Linked devices → Link a device:\n')
       qrcode.generate(qr, { small: true })
-      const pngPath = join(ROOT, 'pair-qr.png')
+      const pngPath = join(RUNTIME_ROOT, 'pair-qr.png')
       QRCode.toFile(pngPath, qr, { width: 600, margin: 2 })
         .then(() => {
           console.log(`QR also saved to ${pngPath}`)
@@ -265,6 +281,11 @@ async function start() {
         .catch(err => console.error('QR png write failed', err))
     }
     if (connection === 'open') {
+      writeHeartbeat(RUNTIME_ROOT, {
+        status: 'connected',
+        connection: 'open',
+        last_connection_at: new Date().toISOString(),
+      })
       console.log('connection open — archiving to', DATA_DIR)
       sock.groupFetchAllParticipating()
         .then(map => {
@@ -277,10 +298,17 @@ async function start() {
     if (connection === 'close') {
       const code = new Boom(lastDisconnect?.error)?.output?.statusCode
       const loggedOut = code === DisconnectReason.loggedOut
+      writeHeartbeat(RUNTIME_ROOT, {
+        status: loggedOut ? 'logged_out' : 'disconnected',
+        connection: 'close',
+        last_disconnect_at: new Date().toISOString(),
+        last_disconnect_code: code ?? null,
+        logged_out: loggedOut,
+      })
       console.log(`connection close code=${code} loggedOut=${loggedOut}`)
       if (!loggedOut) start().catch(err => { console.error('reconnect failed', err); process.exit(1) })
       else {
-        console.error('logged out — delete the auth/ folder and re-pair')
+        console.error('logged out — delete the runtime auth/ folder and re-pair')
         process.exit(2)
       }
     }
@@ -295,7 +323,7 @@ async function start() {
         file = result.file
         if (result.saved) {
           const location = file ?? 'sqlite'
-          console.log(`[upsert ${type}] ${chatId} → ${location}  ${String(approvedPreview(m)).slice(0, 80)}`)
+          console.log(`[upsert ${type}] ${chatId} → ${location} type=${messageTypeForLog(m)}`)
         } else {
           console.log(`[upsert ${type}] ${chatId ?? 'unknown'} skipped (${result.reason})`)
         }
@@ -303,7 +331,7 @@ async function start() {
         console.error('write failed', err)
       }
 
-      if (type === 'notify' && !m.key.fromMe && isReadApproved(db, chatId)) {
+      if (type === 'notify' && !m.key.fromMe && isReadApproved(db, chatId, { root: RUNTIME_ROOT })) {
         // Fire-and-forget; don't block the next message on a slow download.
         if (file) downloadInboundMedia(m, sock, file).catch(() => {})
 
@@ -357,6 +385,10 @@ async function start() {
       console.error('groupMetadata refresh failed', id, err)
     }
   })
+}
+
+function messageTypeForLog(msg) {
+  return Object.keys(msg?.message ?? {})[0] ?? 'unknown'
 }
 
 function shutdown() {

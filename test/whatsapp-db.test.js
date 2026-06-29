@@ -7,12 +7,18 @@ import { backfillApprovedContactFromArchive } from '../lib/whatsapp-backfill.js'
 import {
   approveContact,
   createOutboundMessage,
+  listCatalogActivity,
+  listCatalogApprovedContacts,
+  listCatalogContacts,
   listApprovedContacts,
+  listRecentApprovedMessages,
   listContacts,
   listRecentMessages,
+  migrateLegacyApprovedStore,
   openWhatsAppDb,
   persistMessageIfApproved,
   revokeContact,
+  searchCatalogContacts,
   searchContacts,
   upsertContact,
 } from '../lib/whatsapp-db.js'
@@ -109,6 +115,208 @@ test('contact metadata can be listed and searched without read approval', () => 
   })
 })
 
+test('catalog export exposes contact metadata without message bodies', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'whatsapp-cli-test-'))
+  const db = openWhatsAppDb({ root: dir })
+
+  try {
+    upsertContact(db, {
+      id: '15551234567@s.whatsapp.net',
+      name: 'Synthetic Contact',
+      pushName: 'Synthetic Push',
+      verifiedName: 'Synthetic Verified',
+    }, { root: dir })
+    approveContact(db, '15557654321@s.whatsapp.net', {
+      displayName: 'Approved Person',
+      readAllowed: true,
+      root: dir,
+    })
+    persistMessageIfApproved(db, syntheticMessage({
+      chatId: '15557654321@s.whatsapp.net',
+      text: 'approved private text',
+    }), 'test', { root: dir })
+
+    const contacts = listCatalogContacts({ root: dir })
+    const approved = listCatalogApprovedContacts({ root: dir })
+    const search = searchCatalogContacts('synthetic', { root: dir })
+
+    assert.equal(contacts.length, 2)
+    assert.equal(search.length, 1)
+    assert.equal(search[0].id, '15551234567@s.whatsapp.net')
+    assert.equal(search[0].contact_name, 'Synthetic Contact')
+    assert.equal(search[0].verified_name, 'Synthetic Verified')
+    assert.equal(search[0].phone_number, '15551234567')
+    assert.equal(approved.length, 1)
+    assert.equal(approved[0].id, '15557654321@s.whatsapp.net')
+    assert.equal(approved[0].last_inbound_message_at, '2023-11-14T22:13:20.000Z')
+    assert.equal(JSON.stringify(contacts).includes('approved private text'), false)
+  } finally {
+    db.close()
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('catalog tracks unapproved message timestamps without message bodies', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'whatsapp-cli-test-'))
+  const db = openWhatsAppDb({ root: dir })
+
+  try {
+    persistMessageIfApproved(db, syntheticMessage({
+      chatId: '15551234567@s.whatsapp.net',
+      id: 'INBOUND1',
+      text: 'unapproved private text',
+      timestamp: 1_700_000_000,
+    }), 'test', { root: dir })
+    persistMessageIfApproved(db, {
+      ...syntheticMessage({
+        chatId: '15551234567@s.whatsapp.net',
+        id: 'OUTBOUND1',
+        text: 'outbound private text',
+        timestamp: 1_700_000_100,
+      }),
+      key: {
+        remoteJid: '15551234567@s.whatsapp.net',
+        id: 'OUTBOUND1',
+        fromMe: true,
+      },
+    }, 'test', { root: dir })
+
+    const contacts = listCatalogContacts({ root: dir })
+
+    assert.equal(contacts.length, 1)
+    assert.equal(contacts[0].last_message_at, '2023-11-14T22:15:00.000Z')
+    assert.equal(contacts[0].last_inbound_message_at, '2023-11-14T22:13:20.000Z')
+    assert.equal(contacts[0].last_outbound_message_at, '2023-11-14T22:15:00.000Z')
+    assert.equal(JSON.stringify(contacts).includes('private text'), false)
+  } finally {
+    db.close()
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('catalog activity lists recent chat metadata without message bodies', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'whatsapp-cli-test-'))
+  const db = openWhatsAppDb({ root: dir })
+
+  try {
+    persistMessageIfApproved(db, syntheticMessage({
+      chatId: '15551234567@s.whatsapp.net',
+      id: 'INBOUND1',
+      text: 'private inbound text',
+      timestamp: 1_700_000_000,
+    }), 'test', { root: dir })
+    persistMessageIfApproved(db, {
+      ...syntheticMessage({
+        chatId: '15557654321@s.whatsapp.net',
+        id: 'OUTBOUND1',
+        text: 'private outbound text',
+        timestamp: 1_700_000_100,
+      }),
+      key: {
+        remoteJid: '15557654321@s.whatsapp.net',
+        id: 'OUTBOUND1',
+        fromMe: true,
+      },
+    }, 'test', { root: dir })
+
+    const activity = listCatalogActivity({
+      root: dir,
+      sinceIso: '2023-11-14T22:13:21.000Z',
+    })
+
+    assert.equal(activity.length, 1)
+    assert.equal(activity[0].id, '15557654321@s.whatsapp.net')
+    assert.equal(activity[0].last_sender, 'me')
+    assert.equal(activity[0].last_direction, 'outbound')
+    assert.equal(JSON.stringify(activity).includes('private outbound text'), false)
+  } finally {
+    db.close()
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('catalog activity can list all inbound chats chronologically without approval', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'whatsapp-cli-test-'))
+  const db = openWhatsAppDb({ root: dir })
+
+  try {
+    persistMessageIfApproved(db, syntheticMessage({
+      chatId: '15551234567@s.whatsapp.net',
+      id: 'PERSON1',
+      text: 'private person text',
+      timestamp: 1_700_000_000,
+    }), 'test', { root: dir })
+    persistMessageIfApproved(db, syntheticMessage({
+      chatId: '120363111111111111@g.us',
+      id: 'GROUP1',
+      text: 'private group text',
+      timestamp: 1_700_000_100,
+    }), 'test', { root: dir })
+    persistMessageIfApproved(db, {
+      ...syntheticMessage({
+        chatId: '15557654321@s.whatsapp.net',
+        id: 'OUTBOUND1',
+        text: 'private outbound text',
+        timestamp: 1_700_000_200,
+      }),
+      key: {
+        remoteJid: '15557654321@s.whatsapp.net',
+        id: 'OUTBOUND1',
+        fromMe: true,
+      },
+    }, 'test', { root: dir })
+
+    const activity = listCatalogActivity({
+      root: dir,
+      sinceIso: '2023-11-14T22:13:19.000Z',
+      untilIso: '2023-11-14T22:16:00.000Z',
+      direction: 'inbound',
+      order: 'asc',
+    })
+
+    assert.equal(activity.length, 2)
+    assert.equal(activity[0].id, '15551234567@s.whatsapp.net')
+    assert.equal(activity[1].id, '120363111111111111@g.us')
+    assert.equal(activity[1].is_group, 1)
+    assert.equal(JSON.stringify(activity).includes('private person text'), false)
+    assert.equal(JSON.stringify(activity).includes('private group text'), false)
+  } finally {
+    db.close()
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('recent approved messages lists approved rows across chats', () => {
+  withDb(db => {
+    const olderChat = '15551234567@s.whatsapp.net'
+    const newerChat = '15557654321@s.whatsapp.net'
+    approveContact(db, olderChat, { readAllowed: true })
+    approveContact(db, newerChat, { readAllowed: true, displayName: 'Newer Person' })
+    persistMessageIfApproved(db, syntheticMessage({
+      chatId: olderChat,
+      id: 'OLDER1',
+      text: 'older approved message',
+      timestamp: 1_700_000_000,
+    }), 'test')
+    persistMessageIfApproved(db, syntheticMessage({
+      chatId: newerChat,
+      id: 'NEWER1',
+      text: 'newer approved message',
+      timestamp: 1_700_000_100,
+    }), 'test')
+
+    const messages = listRecentApprovedMessages(db, {
+      sinceTimestampMs: 1_700_000_001_000,
+    })
+
+    assert.equal(messages.length, 1)
+    assert.equal(messages[0].chat_id, newerChat)
+    assert.equal(messages[0].display_name, 'Newer Person')
+    assert.equal(messages[0].timestamp_iso, '2023-11-14T22:15:00.000Z')
+    assert.equal(messages[0].text, 'newer approved message')
+  })
+})
+
 test('backfilling an approved contact stores only matching recent archive messages', () => {
   const dir = mkdtempSync(join(tmpdir(), 'whatsapp-cli-test-'))
   const db = openWhatsAppDb({ root: dir, path: join(dir, 'test.sqlite') })
@@ -157,6 +365,87 @@ test('backfilling an approved contact stores only matching recent archive messag
     )
   } finally {
     db.close()
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('legacy migration copies only approved messages into approved store', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'whatsapp-cli-test-'))
+  const legacyPath = join(dir, 'data', 'whatsapp-cli.sqlite')
+  const approvedPath = join(dir, 'data', 'approved', 'approved.sqlite')
+  const legacyDb = openWhatsAppDb({ root: dir, path: legacyPath })
+
+  try {
+    const approvedChat = '15551234567@s.whatsapp.net'
+    const otherChat = '15557654321@s.whatsapp.net'
+    approveContact(legacyDb, approvedChat, { readAllowed: true })
+    upsertContact(legacyDb, { id: otherChat, name: 'Other Person' })
+    persistMessageIfApproved(legacyDb, syntheticMessage({
+      chatId: approvedChat,
+      id: 'APPROVED1',
+      text: 'approved legacy message',
+    }), 'legacy')
+    legacyDb.prepare(`
+      INSERT INTO messages (id, chat_id, sender_id, from_me, timestamp_ms, message_type, text, source, raw_json)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      `${otherChat}:OTHER1:from-them`,
+      otherChat,
+      otherChat,
+      0,
+      1_700_000_000_000,
+      'conversation',
+      'unapproved legacy message',
+      'legacy',
+      '{}',
+    )
+  } finally {
+    legacyDb.close()
+  }
+
+  const stats = migrateLegacyApprovedStore({ root: dir, legacyPath, approvedPath })
+  const approvedDb = openWhatsAppDb({ root: dir, path: approvedPath, readOnly: true })
+
+  try {
+    const messages = listRecentMessages(approvedDb, '15551234567@s.whatsapp.net', { root: dir })
+    assert.equal(stats.messages, 1)
+    assert.equal(messages.length, 1)
+    assert.equal(messages[0].text, 'approved legacy message')
+    assert.equal(JSON.stringify(listCatalogContacts({ root: dir })).includes('unapproved legacy message'), false)
+  } finally {
+    approvedDb.close()
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('legacy migration exports contacts from legacy state json files', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'whatsapp-cli-test-'))
+  mkdirSync(join(dir, 'data'), { recursive: true })
+  writeFileSync(join(dir, 'data', 'contacts.json'), JSON.stringify({
+    '15551234567@s.whatsapp.net': {
+      id: '15551234567@s.whatsapp.net',
+      name: 'Legacy Contact',
+      pushName: 'Legacy Push',
+    },
+  }))
+  writeFileSync(join(dir, 'data', 'chats.json'), JSON.stringify({
+    '120363000000000000@g.us': {
+      id: '120363000000000000@g.us',
+      subject: 'Legacy Group',
+      conversationTimestamp: 1_700_000_100,
+    },
+  }))
+
+  try {
+    const stats = migrateLegacyApprovedStore({ root: dir })
+    const contacts = listCatalogContacts({ root: dir })
+
+    assert.equal(stats.imported_state_contacts, 2)
+    assert.equal(contacts.length, 2)
+    assert.equal(contacts.find(row => row.id === '15551234567@s.whatsapp.net').display_name, 'Legacy Contact')
+    assert.equal(contacts.find(row => row.id === '120363000000000000@g.us').display_name, 'Legacy Group')
+    assert.equal(contacts.find(row => row.id === '120363000000000000@g.us').last_message_at, '2023-11-14T22:15:00.000Z')
+  } finally {
     rmSync(dir, { recursive: true, force: true })
   }
 })

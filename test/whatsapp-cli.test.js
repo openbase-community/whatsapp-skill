@@ -1,7 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { execFileSync } from 'node:child_process'
-import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import {
@@ -39,14 +39,26 @@ function runCliWithEnv(dbPath, args, env) {
   })
 }
 
-function syntheticMessage({ chatId = '15551234567@s.whatsapp.net', id = 'MSG1', text = 'hello' } = {}) {
+function runCliRoot(root, args) {
+  return execFileSync(process.execPath, [CLI, '--root', root, ...args], {
+    encoding: 'utf8',
+    env: { ...process.env, WHATSAPP_SKIP_OPENBASE_APPROVAL: '1' },
+  })
+}
+
+function syntheticMessage({
+  chatId = '15551234567@s.whatsapp.net',
+  id = 'MSG1',
+  text = 'hello',
+  timestamp = 1_700_000_000,
+} = {}) {
   return {
     key: {
       remoteJid: chatId,
       id,
       fromMe: false,
     },
-    messageTimestamp: 1_700_000_000,
+    messageTimestamp: timestamp,
     message: {
       conversation: text,
     },
@@ -65,6 +77,129 @@ test('CLI searches contact metadata without reading messages', () => {
     assert.equal(result.length, 1)
     assert.equal(result[0].id, '15551234567@s.whatsapp.net')
     assert.equal(result[0].approved, 0)
+    assert.equal(result[0].phone_number, '15551234567')
+  })
+})
+
+test('CLI searches exported catalog without opening SQLite', () => {
+  const root = mkdtempSync(join(tmpdir(), 'whatsapp-cli-test-'))
+  const db = openWhatsAppDb({ root })
+  try {
+    upsertContact(db, {
+      id: '15551234567@s.whatsapp.net',
+      name: 'Synthetic Contact',
+    }, { root })
+
+    const result = JSON.parse(runCliRoot(root, ['search', 'synthetic', '--json']))
+
+    assert.equal(result.length, 1)
+    assert.equal(result[0].id, '15551234567@s.whatsapp.net')
+  } finally {
+    db.close()
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('CLI auto-creates the runtime directory skeleton', () => {
+  const parent = mkdtempSync(join(tmpdir(), 'whatsapp-cli-test-'))
+  const root = join(parent, 'runtime')
+  try {
+    const result = JSON.parse(runCliRoot(root, ['contacts', '--json']))
+
+    assert.deepEqual(result, [])
+    for (const relativePath of [
+      'data',
+      'data/catalog',
+      'data/approved',
+      'data/protected',
+      'data/protected/archive',
+      'data/protected/state',
+      'auth',
+      'logs',
+    ]) {
+      assert.equal(existsSync(join(root, relativePath)), true, relativePath)
+    }
+    assert.equal(statSync(join(root, 'data/protected')).mode & 0o777, 0o700)
+    assert.equal(statSync(join(root, 'auth')).mode & 0o777, 0o700)
+  } finally {
+    rmSync(parent, { recursive: true, force: true })
+  }
+})
+
+test('CLI lists catalog activity without opening SQLite', () => {
+  const root = mkdtempSync(join(tmpdir(), 'whatsapp-cli-test-'))
+  const db = openWhatsAppDb({ root })
+  try {
+    persistMessageIfApproved(db, syntheticMessage({
+      chatId: '15551234567@s.whatsapp.net',
+      text: 'unapproved private text',
+    }), 'test', { root })
+
+    const result = JSON.parse(runCliRoot(root, ['activity', '--since', '2023-11-14', '--json']))
+
+    assert.equal(result.length, 1)
+    assert.equal(result[0].id, '15551234567@s.whatsapp.net')
+    assert.equal(result[0].last_direction, 'inbound')
+    assert.equal(JSON.stringify(result).includes('unapproved private text'), false)
+  } finally {
+    db.close()
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('CLI lists unapproved inbound activity in chronological order', () => {
+  const root = mkdtempSync(join(tmpdir(), 'whatsapp-cli-test-'))
+  const db = openWhatsAppDb({ root })
+  try {
+    persistMessageIfApproved(db, syntheticMessage({
+      chatId: '15551234567@s.whatsapp.net',
+      id: 'FIRST',
+      text: 'first private text',
+      timestamp: 1_700_000_000,
+    }), 'test', { root })
+    persistMessageIfApproved(db, syntheticMessage({
+      chatId: '120363111111111111@g.us',
+      id: 'SECOND',
+      text: 'second private text',
+      timestamp: 1_700_000_100,
+    }), 'test', { root })
+
+    const result = JSON.parse(runCliRoot(root, [
+      'activity',
+      '--since',
+      '2023-11-14',
+      '--until',
+      '2023-11-15',
+      '--direction',
+      'inbound',
+      '--order',
+      'asc',
+      '--json',
+    ]))
+
+    assert.equal(result.length, 2)
+    assert.equal(result[0].id, '15551234567@s.whatsapp.net')
+    assert.equal(result[1].id, '120363111111111111@g.us')
+    assert.equal(JSON.stringify(result).includes('private text'), false)
+  } finally {
+    db.close()
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('CLI lists recent approved messages across contacts', () => {
+  withTempDb(({ dbPath, db }) => {
+    const chatId = '15551234567@s.whatsapp.net'
+    approveContact(db, chatId, { displayName: 'Synthetic Contact', readAllowed: true })
+    persistMessageIfApproved(db, syntheticMessage({ chatId, text: 'approved message' }), 'test')
+
+    const result = JSON.parse(runCli(dbPath, ['messages', '--since', '2023-11-14', '--no-text', '--json']))
+
+    assert.equal(result.length, 1)
+    assert.equal(result[0].chat_id, chatId)
+    assert.equal(result[0].display_name, 'Synthetic Contact')
+    assert.equal(result[0].timestamp_iso, '2023-11-14T22:13:20.000Z')
+    assert.equal(result[0].text, null)
   })
 })
 
@@ -127,5 +262,39 @@ test('CLI asks Openbase Coder before queueing a send', () => {
     ])
     assert.ok(approvalArgs.includes('send-message'))
     assert.ok(approvalArgs.includes(`contact_id=${chatId}`))
+  })
+})
+
+test('CLI approve uses sudo-equivalent privilege without Openbase approval', () => {
+  withTempDb(({ root, dbPath }) => {
+    const approvalBin = join(root, 'openbase-coder')
+    writeFileSync(
+      approvalBin,
+      '#!/bin/sh\nexit 42\n',
+    )
+    chmodSync(approvalBin, 0o755)
+
+    const result = JSON.parse(runCliWithEnv(
+      dbPath,
+      ['approve', '15551234567@s.whatsapp.net', '--name', 'Synthetic Contact', '--no-read', '--json'],
+      {
+        PATH: `${root}:${process.env.PATH}`,
+        WHATSAPP_ALLOW_UNPRIVILEGED_ADMIN: '1',
+      },
+    ))
+
+    assert.equal(result.contact.id, '15551234567@s.whatsapp.net')
+    assert.equal(result.contact.approved, 1)
+    assert.equal(result.contact.read_allowed, 0)
+    assert.equal(result.backfill.skipped, true)
+  })
+})
+
+test('CLI requires sudo-equivalent privileges to approve contacts', () => {
+  withTempDb(({ dbPath }) => {
+    assert.throws(
+      () => runCli(dbPath, ['approve', '15551234567@s.whatsapp.net', '--json']),
+      /requires sudo/,
+    )
   })
 })

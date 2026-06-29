@@ -13,17 +13,26 @@
     <key>WorkingDirectory</key>
     <string>{{REPO_DIR}}</string>
 
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>WHATSAPP_RUNTIME_HOME</key>
+        <string>{{RUNTIME_DIR}}</string>
+    </dict>
+
     <key>StartInterval</key>
     <integer>10800</integer>
 
     <key>RunAtLoad</key>
     <true/>
 
+    <key>Umask</key>
+    <integer>7</integer>
+
     <key>StandardOutPath</key>
-    <string>{{USER_HOME}}/Library/Logs/whatsapp-watchdog/watchdog.out.log</string>
+    <string>{{LOG_DIR}}/watchdog.out.log</string>
 
     <key>StandardErrorPath</key>
-    <string>{{USER_HOME}}/Library/Logs/whatsapp-watchdog/watchdog.err.log</string>
+    <string>{{LOG_DIR}}/watchdog.err.log</string>
 
     <key>ProcessType</key>
     <string>Background</string>

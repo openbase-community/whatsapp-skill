@@ -17,6 +17,10 @@ user_home="$(/usr/bin/dscl . -read "/Users/$run_user" NFSHomeDirectory 2>/dev/nu
 if [[ -z "$user_home" ]]; then
   user_home="/Users/$run_user"
 fi
+runtime_dir="${WHATSAPP_RUNTIME_HOME:-$user_home/.whatsapp}"
+data_dir="$runtime_dir/data"
+auth_dir="$runtime_dir/auth"
+logs_dir="$runtime_dir/logs"
 
 label_prefix="${WHATSAPP_LAUNCHD_LABEL_PREFIX:-com.$run_user.whatsapp}"
 archive_label="$label_prefix-archive"
@@ -38,12 +42,40 @@ render_plist() {
   /bin/mkdir -p "$(dirname "$output")"
   /usr/bin/sed \
     -e "s/{{REPO_DIR}}/$(escape_sed_replacement "$repo_dir")/g" \
+    -e "s/{{RUNTIME_DIR}}/$(escape_sed_replacement "$runtime_dir")/g" \
+    -e "s/{{LOG_DIR}}/$(escape_sed_replacement "$logs_dir")/g" \
     -e "s/{{USER_HOME}}/$(escape_sed_replacement "$user_home")/g" \
     -e "s/{{NODE_BIN}}/$(escape_sed_replacement "$node_bin")/g" \
     -e "s/{{ARCHIVE_LABEL}}/$(escape_sed_replacement "$archive_label")/g" \
     -e "s/{{WATCHDOG_LABEL}}/$(escape_sed_replacement "$watchdog_label")/g" \
     "$template" > "$output"
   /usr/bin/plutil -lint "$output" >/dev/null
+}
+
+restart_system_daemon() {
+  local label="$1"
+  local target="$2"
+
+  launchctl bootout "system/$label" 2>/dev/null || true
+  for attempt in 1 2 3; do
+    if launchctl bootstrap system "$target"; then
+      break
+    fi
+    if launchctl print "system/$label" >/dev/null 2>&1; then
+      echo "$label is already bootstrapped; continuing..."
+      break
+    fi
+    if [[ "$attempt" -lt 3 ]]; then
+      echo "Bootstrap for $label failed; retrying..."
+      sleep 1
+    fi
+  done
+
+  if ! launchctl print "system/$label" >/dev/null 2>&1; then
+    echo "Failed to bootstrap $label." >&2
+    exit 1
+  fi
+  launchctl kickstart -k "system/$label"
 }
 
 echo "Repairing group memberships..."
@@ -53,9 +85,47 @@ dseditgroup -o edit -a _whatsapp -t user staff
 dseditgroup -o edit -a "$run_user" -t user whatsapp-data
 
 echo "Ensuring runtime directories are owned by _whatsapp..."
-for dir in data auth logs; do
-  install -d -o _whatsapp -g whatsapp-data -m 750 "$repo_dir/$dir"
+install -d -o _whatsapp -g whatsapp-data -m 710 "$runtime_dir"
+install -d -o _whatsapp -g whatsapp-data -m 710 "$data_dir"
+install -d -o _whatsapp -g whatsapp-data -m 750 "$data_dir/catalog"
+install -d -o _whatsapp -g whatsapp-data -m 750 "$data_dir/approved"
+install -d -o _whatsapp -g whatsapp-data -m 700 "$data_dir/protected"
+install -d -o _whatsapp -g whatsapp-data -m 700 "$data_dir/protected/archive"
+install -d -o _whatsapp -g whatsapp-data -m 700 "$data_dir/protected/state"
+install -d -o _whatsapp -g whatsapp-data -m 700 "$auth_dir"
+install -d -o _whatsapp -g whatsapp-data -m 770 "$logs_dir"
+
+for legacy_state in contacts.json chats.json; do
+  if [[ -f "$data_dir/$legacy_state" && ! -f "$data_dir/protected/state/$legacy_state" ]]; then
+    mv "$data_dir/$legacy_state" "$data_dir/protected/state/$legacy_state"
+  fi
 done
+
+if [[ -d "$data_dir/groups" && ! -e "$data_dir/protected/state/groups" ]]; then
+  mv "$data_dir/groups" "$data_dir/protected/state/groups"
+fi
+
+for legacy_day_dir in "$data_dir"/[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]; do
+  [[ -d "$legacy_day_dir" ]] || continue
+  day_name="$(basename "$legacy_day_dir")"
+  target_day_dir="$data_dir/protected/archive/$day_name"
+  if [[ -e "$target_day_dir" ]]; then
+    find "$legacy_day_dir" -mindepth 1 -maxdepth 1 -exec mv {} "$target_day_dir/" \;
+    rmdir "$legacy_day_dir"
+  else
+    mv "$legacy_day_dir" "$target_day_dir"
+  fi
+done
+
+chown -R _whatsapp:whatsapp-data "$data_dir/catalog" "$data_dir/approved" "$data_dir/protected" "$auth_dir" "$logs_dir"
+chmod 750 "$data_dir/catalog" "$data_dir/approved"
+chmod 700 "$data_dir/protected" "$data_dir/protected/archive" "$data_dir/protected/state" "$auth_dir"
+chmod 770 "$logs_dir"
+find "$data_dir/catalog" -type f -exec chmod 640 {} + 2>/dev/null || true
+find "$data_dir/approved" -type f -name 'approved.sqlite*' -exec chmod 640 {} + 2>/dev/null || true
+find "$data_dir/protected" -mindepth 1 -exec chmod go-rwx {} + 2>/dev/null || true
+find "$auth_dir" -mindepth 1 -exec chmod go-rwx {} + 2>/dev/null || true
+find "$logs_dir" -type f -exec chmod 660 {} + 2>/dev/null || true
 
 echo "Rendering launchd plists..."
 render_plist "$repo_dir/launchd/whatsapp-archive.plist.template" "$generated_dir/$archive_label.plist"
@@ -85,9 +155,7 @@ for label in "$archive_label"; do
   chmod 644 "$target"
 
   echo "Restarting $label..."
-  launchctl bootout "system/$label" 2>/dev/null || true
-  launchctl bootstrap system "$target"
-  launchctl kickstart -k "system/$label"
+  restart_system_daemon "$label" "$target"
 done
 
 echo "Installing $watchdog_label..."
