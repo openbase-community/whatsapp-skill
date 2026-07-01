@@ -17,6 +17,8 @@
     <dict>
         <key>WHATSAPP_RUNTIME_HOME</key>
         <string>{{RUNTIME_DIR}}</string>
+        <key>WHATSAPP_ARCHIVE_LABEL</key>
+        <string>{{ARCHIVE_LABEL}}</string>
     </dict>
 
     <key>StartInterval</key>

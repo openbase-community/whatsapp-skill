@@ -51,12 +51,13 @@ function syntheticMessage({
   id = 'MSG1',
   text = 'hello',
   timestamp = 1_700_000_000,
+  fromMe = false,
 } = {}) {
   return {
     key: {
       remoteJid: chatId,
       id,
-      fromMe: false,
+      fromMe,
     },
     messageTimestamp: timestamp,
     message: {
@@ -191,13 +192,16 @@ test('CLI lists recent approved messages across contacts', () => {
   withTempDb(({ dbPath, db }) => {
     const chatId = '15551234567@s.whatsapp.net'
     approveContact(db, chatId, { displayName: 'Synthetic Contact', readAllowed: true })
-    persistMessageIfApproved(db, syntheticMessage({ chatId, text: 'approved message' }), 'test')
+    persistMessageIfApproved(db, syntheticMessage({ chatId, text: 'approved message', fromMe: true }), 'test')
 
     const result = JSON.parse(runCli(dbPath, ['messages', '--since', '2023-11-14', '--no-text', '--json']))
 
     assert.equal(result.length, 1)
     assert.equal(result[0].chat_id, chatId)
     assert.equal(result[0].display_name, 'Synthetic Contact')
+    assert.equal(result[0].sender_display, 'You')
+    assert.equal(result[0].direction, 'outbound')
+    assert.equal(result[0].from_label, 'You')
     assert.equal(result[0].timestamp_iso, '2023-11-14T22:13:20.000Z')
     assert.equal(result[0].text, null)
   })
@@ -214,6 +218,9 @@ test('CLI returns recent messages only for an approved contact', () => {
     assert.equal(result.contact_id, chatId)
     assert.equal(result.messages.length, 1)
     assert.equal(result.messages[0].text, 'approved message')
+    assert.equal(result.messages[0].sender_display, chatId)
+    assert.equal(result.messages[0].direction, 'inbound')
+    assert.equal(result.messages[0].from_label, 'not you')
   })
 })
 

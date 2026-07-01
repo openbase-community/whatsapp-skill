@@ -61,6 +61,12 @@ whatsapp-local migrate-storage [--json]
 sudo whatsapp-local rebuild-activity [--since today|YYYY-MM-DD|ISO] [--until YYYY-MM-DD|ISO] [--json]
 ```
 
+`recent` and `messages` rows include `from_me`, `direction`, `from_label`, and
+`sender_display`. Treat `from_me: 1`, `direction: "outbound"`, or
+`from_label: "You"` as the account owner's own message. Treat `from_me: 0` and
+`direction: "inbound"` as someone else's message, even if the message text
+sounds like the account owner or the resolved `sender_display` is ambiguous.
+
 This lets a local skill expose only explicit CLI commands while keeping raw WhatsApp archive files out of agent context. `activity` lists metadata-only activity for people and groups, including unapproved chats, without message bodies. `rebuild-activity` requires sudo because it indexes metadata from the protected raw archive. Approving a contact backfills matching local JSON archive messages for that exact JID, then stores future messages live. Backfill defaults to the last 6 months and can be changed per approval with `--backfill-months` or globally with `WHATSAPP_BACKFILL_MONTHS`. It still does not load messages for unapproved contacts.
 
 ## Protected raw JSON archive
@@ -98,7 +104,7 @@ If WhatsApp logs the device out (or you want a fresh start), the auth directory 
 
 ```sh
 sudo rm -rf ~/.whatsapp/auth
-sudo launchctl kickstart -k system/com.gabemontague.whatsapp-archive
+sudo launchctl kickstart -k "system/com.$USER.whatsapp-archive"
 # QR will land in the archive log; also as a PNG at ~/.whatsapp/pair-qr.png.
 # Scan with WhatsApp → Settings → Linked devices → Link a device.
 tail -f ~/.whatsapp/logs/archive.out.log
@@ -113,9 +119,9 @@ sudo -u _whatsapp /usr/bin/env -i HOME="$HOME" WHATSAPP_RUNTIME_HOME="$HOME/.wha
 
 ## Always-on (launchd as `_whatsapp`)
 
-The archiver runs as a **system LaunchDaemon** under a dedicated, hidden service user `_whatsapp` (UID 450). The installed plist lives at `/Library/LaunchDaemons/com.gabemontague.whatsapp-archive.plist` (root-owned, world-readable, mode 644). The repo tracks launchd templates; `scripts/install-launchd-services.sh` renders local plists into `.generated/launchd/` so usernames and absolute paths are not committed.
+The archiver runs as a **system LaunchDaemon** under a dedicated, hidden service user `_whatsapp` (UID 450 in the example below). The installed plist defaults to `/Library/LaunchDaemons/com.$USER.whatsapp-archive.plist` (root-owned, world-readable, mode 644). The repo tracks launchd templates; `scripts/install-launchd-services.sh` renders local plists into `.generated/launchd/` so usernames and absolute paths are not committed.
 
-`~/.whatsapp/data/catalog` and `~/.whatsapp/data/approved` are owned by `_whatsapp:whatsapp-data` and readable by the `whatsapp-data` group. `~/.whatsapp/data/protected` and `~/.whatsapp/auth` are sudo/service-only. `~/.whatsapp/logs` is readable/writable by the `whatsapp-data` group and should contain operational metadata only, not message bodies. Membership: `gabemontague` and `_whatsapp` are in `whatsapp-data`, which allows normal CLI reads of catalog and already-approved messages without exposing raw archive/auth data. See **Lockdown** section below for setup.
+`~/.whatsapp/data/catalog` and `~/.whatsapp/data/approved` are owned by `_whatsapp:whatsapp-data` and readable by the `whatsapp-data` group. `~/.whatsapp/data/protected` and `~/.whatsapp/auth` are sudo/service-only. `~/.whatsapp/logs` is readable/writable by the `whatsapp-data` group and should contain operational metadata only, not message bodies. Membership: your login user and `_whatsapp` are in `whatsapp-data`, which allows normal CLI reads of catalog and already-approved messages without exposing raw archive/auth data. See **Lockdown** section below for setup.
 
 For this machine, reinstall the archive LaunchDaemon and watchdog with:
 
@@ -128,14 +134,14 @@ The installer also makes sure `_whatsapp` can traverse the source tree by adding
 
 ```sh
 # Status (note: system/ domain, NOT gui/$UID/)
-launchctl print system/com.gabemontague.whatsapp-archive | head -40
+launchctl print "system/com.$USER.whatsapp-archive" | head -40
 
 # Stop / start (sudo because /Library/LaunchDaemons is root-owned)
-sudo launchctl bootout   system/com.gabemontague.whatsapp-archive
-sudo launchctl bootstrap system /Library/LaunchDaemons/com.gabemontague.whatsapp-archive.plist
+sudo launchctl bootout   "system/com.$USER.whatsapp-archive"
+sudo launchctl bootstrap system "/Library/LaunchDaemons/com.$USER.whatsapp-archive.plist"
 
 # Force restart
-sudo launchctl kickstart -k system/com.gabemontague.whatsapp-archive
+sudo launchctl kickstart -k "system/com.$USER.whatsapp-archive"
 
 # Tail live output.
 tail -f ~/.whatsapp/logs/archive.out.log
@@ -145,14 +151,14 @@ The generated plists use `/opt/homebrew/bin/node` by default. If Homebrew moves,
 
 ## Watchdog
 
-A LaunchAgent (`com.gabemontague.whatsapp-watchdog`, plist at `~/Library/LaunchAgents/...`) runs `watchdog.sh` every 3 hours under `gabemontague` and posts a macOS notification if either:
+A LaunchAgent (`com.$USER.whatsapp-watchdog`, plist at `~/Library/LaunchAgents/...`) runs `watchdog.sh` every 3 hours under your login user and posts a macOS notification if either:
 
 - the archiver daemon is not in `state = running` (queries `system/...`), or
 - `~/.whatsapp/data/catalog/heartbeat.json` is stale or reports a disconnected/logged-out state.
 
 Healthy heartbeat states are `connected`, `running`, and `migrated`. A quiet daemon should still move from `starting` to `connected` after Baileys opens the WhatsApp socket. `pairing`, `disconnected`, `logged_out`, or an old `checked_at` need attention.
 
-The watchdog stays as a per-user Agent (not a Daemon) because Daemons can't post desktop notifications. It reads `~/.whatsapp/data/` via `gabemontague`'s membership in the `whatsapp-data` group. Watchdog logs go to `~/.whatsapp/logs/`.
+The watchdog stays as a per-user Agent (not a Daemon) because Daemons can't post desktop notifications. It reads `~/.whatsapp/data/` via your login user's membership in the `whatsapp-data` group. Watchdog logs go to `~/.whatsapp/logs/`.
 
 ```sh
 # Run the check by hand
@@ -162,8 +168,8 @@ The watchdog stays as a per-user Agent (not a Daemon) because Daemons can't post
 tail -f ~/.whatsapp/logs/watchdog.log
 
 # Disable / enable the watchdog itself
-launchctl bootout gui/$(id -u)/com.gabemontague.whatsapp-watchdog
-launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.gabemontague.whatsapp-watchdog.plist
+launchctl bootout "gui/$(id -u)/com.$USER.whatsapp-watchdog"
+launchctl bootstrap "gui/$(id -u)" "$HOME/Library/LaunchAgents/com.$USER.whatsapp-watchdog.plist"
 ```
 
 The first time the watchdog notifies, macOS may ask you to grant notification permission for `osascript` (System Settings → Notifications). Until you do, failures still get logged to `~/.whatsapp/logs/watchdog.log`.
@@ -190,7 +196,7 @@ Hooks fire only on **live** messages — never on `messaging-history.set` backfi
 After dropping a new hook in, kickstart the agent so it picks it up:
 
 ```sh
-sudo launchctl kickstart -k system/com.gabemontague.whatsapp-archive
+sudo launchctl kickstart -k "system/com.$USER.whatsapp-archive"
 tail -f ~/.whatsapp/logs/archive.out.log   # look for `[hooks] loaded N: ...`
 ```
 
@@ -210,7 +216,7 @@ EOF
 
 ## Lockdown (one-time setup, reproducible from scratch)
 
-The archive contains your full WhatsApp message history; we lock it down so other process-users on this machine (e.g. future `_linkedin`, `_email` etc.) cannot read it. Pattern: dedicated service user owns the runtime dirs, a small read group includes only `gabemontague` and the service user.
+The archive contains your full WhatsApp message history; we lock it down so other process-users on this machine (e.g. future `_linkedin`, `_email` etc.) cannot read it. Pattern: dedicated service user owns the runtime dirs, a small read group includes only your login user and the service user.
 
 ```sh
 # 1. Create the service user (UID 450, hidden from login picker, no shell, no home).
@@ -225,7 +231,7 @@ sudo dscl . -create /Users/_whatsapp IsHidden 1
 
 # 2. Create the read group + memberships.
 sudo dseditgroup -o create -i 450 -r "WhatsApp data readers" whatsapp-data
-sudo dseditgroup -o edit -a gabemontague -t user whatsapp-data
+sudo dseditgroup -o edit -a "$USER" -t user whatsapp-data
 sudo dseditgroup -o edit -a _whatsapp  -t user whatsapp-data
 sudo dseditgroup -o edit -a _whatsapp  -t user staff   # so _whatsapp can traverse the user home to reach node + source
 
@@ -239,9 +245,9 @@ sudo chmod 770 ~/.whatsapp/logs
 sudo ./scripts/install-launchd-services.sh
 ```
 
-After step 2, `gabemontague`'s group membership change won't show up in existing terminal sessions until you log out and back in. Launchd-spawned processes pick it up immediately.
+After step 2, your group membership change won't show up in existing terminal sessions until you log out and back in. Launchd-spawned processes pick it up immediately.
 
-To add another locked-down archiver later (e.g. `_linkedin`), repeat the pattern with `_linkedin` + `linkedin-data` group; `gabemontague` joins both read groups but the two service users never join each other's.
+To add another locked-down archiver later (e.g. `_linkedin`), repeat the pattern with `_linkedin` + `linkedin-data` group; your login user joins both read groups but the two service users never join each other's.
 
 ## Media downloads
 

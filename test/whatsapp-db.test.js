@@ -34,12 +34,20 @@ function withDb(fn) {
   }
 }
 
-function syntheticMessage({ chatId = '15551234567@s.whatsapp.net', id = 'MSG1', text = 'hello', timestamp = 1_700_000_000 } = {}) {
+function syntheticMessage({
+  chatId = '15551234567@s.whatsapp.net',
+  id = 'MSG1',
+  text = 'hello',
+  timestamp = 1_700_000_000,
+  fromMe = false,
+  participant = undefined,
+} = {}) {
   return {
     key: {
       remoteJid: chatId,
       id,
-      fromMe: false,
+      fromMe,
+      participant,
     },
     messageTimestamp: timestamp,
     message: {
@@ -82,6 +90,49 @@ test('approving a contact stores future messages and allows recent listing', () 
     assert.equal(messages.length, 1)
     assert.equal(messages[0].text, 'approved message')
     assert.equal(messages[0].chat_id, '15551234567@s.whatsapp.net')
+    assert.equal(messages[0].direction, 'inbound')
+    assert.equal(messages[0].from_label, 'not you')
+  })
+})
+
+test('approved media captions are stored as message text', () => {
+  withDb(db => {
+    const chatId = '15551234567@s.whatsapp.net'
+    const caption = 'No "Philanthropic funding" tag shown on this example org:'
+    approveContact(db, chatId, {
+      displayName: 'Synthetic Contact',
+      readAllowed: true,
+    })
+
+    const liveMessage = {
+      key: {
+        remoteJid: chatId,
+        id: 'IMAGE1',
+        fromMe: false,
+      },
+      messageTimestamp: 1_700_000_000,
+      message: {},
+      toJSON() {
+        return {
+          key: this.key,
+          messageTimestamp: this.messageTimestamp,
+          message: {
+            imageMessage: {
+              mimetype: 'image/jpeg',
+              caption,
+            },
+          },
+        }
+      },
+    }
+
+    const result = persistMessageIfApproved(db, liveMessage, 'test')
+    const messages = listRecentMessages(db, chatId, { limit: 5 })
+
+    assert.equal(result.saved, true)
+    assert.equal(messages.length, 1)
+    assert.equal(messages[0].message_type, 'imageMessage')
+    assert.equal(messages[0].text, caption)
   })
 })
 
@@ -314,6 +365,52 @@ test('recent approved messages lists approved rows across chats', () => {
     assert.equal(messages[0].display_name, 'Newer Person')
     assert.equal(messages[0].timestamp_iso, '2023-11-14T22:15:00.000Z')
     assert.equal(messages[0].text, 'newer approved message')
+  })
+})
+
+test('recent message outputs label self-sent rows as the account owner', () => {
+  withDb(db => {
+    const chatId = '15551234567@s.whatsapp.net'
+    approveContact(db, chatId, { readAllowed: true, displayName: 'Synthetic Contact' })
+    persistMessageIfApproved(db, syntheticMessage({
+      chatId,
+      id: 'SELF1',
+      text: 'self approved message',
+      fromMe: true,
+    }), 'test')
+
+    const messages = listRecentMessages(db, chatId, { limit: 5 })
+
+    assert.equal(messages.length, 1)
+    assert.equal(messages[0].sender_id, 'me')
+    assert.equal(messages[0].sender_display, 'You')
+    assert.equal(messages[0].from_me, 1)
+    assert.equal(messages[0].direction, 'outbound')
+    assert.equal(messages[0].from_label, 'You')
+  })
+})
+
+test('recent message outputs resolve known inbound group senders without treating them as the account owner', () => {
+  withDb(db => {
+    const groupId = '120363111111111111@g.us'
+    const senderId = '152836511920257@lid'
+    approveContact(db, groupId, { readAllowed: true, displayName: 'Synthetic Group' })
+    upsertContact(db, { id: senderId, name: 'Known Sender' })
+    persistMessageIfApproved(db, syntheticMessage({
+      chatId: groupId,
+      id: 'GROUP1',
+      text: 'inbound group message',
+      participant: senderId,
+    }), 'test')
+
+    const messages = listRecentMessages(db, groupId, { limit: 5 })
+
+    assert.equal(messages.length, 1)
+    assert.equal(messages[0].sender_id, senderId)
+    assert.equal(messages[0].sender_display, 'Known Sender')
+    assert.equal(messages[0].from_me, 0)
+    assert.equal(messages[0].direction, 'inbound')
+    assert.equal(messages[0].from_label, 'not you')
   })
 })
 

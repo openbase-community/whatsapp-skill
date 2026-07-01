@@ -1,7 +1,7 @@
 #!/bin/zsh
 # watchdog.sh — health check for the WhatsApp archiver LaunchAgent.
 # Posts a macOS notification on failure and appends a one-line status to the
-# runtime logs directory. Wired to launchd via com.gabemontague.whatsapp-watchdog.plist.
+# runtime logs directory. Wired to launchd by the generated watchdog plist.
 #
 # Failure conditions:
 #   1. The archiver agent is not in state=running.
@@ -12,7 +12,7 @@ DIR="${0:A:h}"
 RUNTIME_DIR="${WHATSAPP_RUNTIME_HOME:-$HOME/.whatsapp}"
 LOG_DIR="$RUNTIME_DIR/logs"
 LOG="$LOG_DIR/watchdog.log"
-LABEL="com.gabemontague.whatsapp-archive"
+LABEL="${WHATSAPP_ARCHIVE_LABEL:-${WHATSAPP_LAUNCHD_LABEL_PREFIX:-com.${USER:-$(id -un)}.whatsapp}-archive}"
 MAX_AGE_HOURS="${WHATSAPP_WATCHDOG_MAX_AGE_HOURS:-36}"
 mkdir -p "$LOG_DIR"
 
