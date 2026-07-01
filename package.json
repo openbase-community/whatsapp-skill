@@ -1,5 +1,5 @@
 {
-  "name": "whatsapp-archive",
+  "name": "whatsapp-skill",
   "version": "0.1.0",
   "private": true,
   "description": "Connect to WhatsApp via Baileys and expose approval-gated local WhatsApp history through a CLI.",

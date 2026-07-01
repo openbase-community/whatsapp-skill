@@ -1,6 +1,19 @@
-# whatsapp archive
+# WhatsApp Skill
 
-Connects to your WhatsApp account via [Baileys](https://baileys.wiki/docs/intro/) and stores approved-contact message history for local CLI access.
+Connects to your WhatsApp account via [Baileys](https://baileys.wiki/docs/intro/), stores approved-contact message history for local CLI access, and includes an agent skill for using that CLI safely.
+
+## Install Skill
+
+```sh
+npx skills add montaguegabe/whatsapp-skill --list
+npx skills add montaguegabe/whatsapp-skill --skill whatsapp-cli
+```
+
+The agent skill lives at:
+
+```text
+skills/whatsapp-cli/SKILL.md
+```
 
 ## First run
 
