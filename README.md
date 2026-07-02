@@ -2,6 +2,17 @@
 
 Connects to your WhatsApp account via [Baileys](https://baileys.wiki/docs/intro/), stores approved-contact message history for local CLI access, and includes an agent skill for using that CLI safely.
 
+## Why a Custom CLI/Skill
+
+WhatsApp does not offer the same local, file-based access pattern as desktop chat archives, and a
+generic MCP would either expose too much message history or require service-specific approval logic.
+This skill keeps raw archives, auth material, and backfill state in protected local storage while
+exposing only catalog metadata and approved-chat messages through explicit CLI commands. Sending is
+separated from reading: send attempts require approved contacts, explicit user approval, and a local
+outbox that is delivered only by the separately running archiver.
+
+GitHub collaborator: `@natea`.
+
 ## Install Skill
 
 ```sh
