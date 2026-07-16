@@ -1,0 +1,42 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>{{WATCHDOG_LABEL}}</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>{{REPO_DIR}}/watchdog.sh</string>
+    </array>
+
+    <key>WorkingDirectory</key>
+    <string>{{REPO_DIR}}</string>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>WHATSAPP_RUNTIME_HOME</key>
+        <string>{{RUNTIME_DIR}}</string>
+        <key>WHATSAPP_ARCHIVE_LABEL</key>
+        <string>{{ARCHIVE_LABEL}}</string>
+    </dict>
+
+    <key>StartInterval</key>
+    <integer>10800</integer>
+
+    <key>RunAtLoad</key>
+    <true/>
+
+    <key>Umask</key>
+    <integer>7</integer>
+
+    <key>StandardOutPath</key>
+    <string>{{LOG_DIR}}/watchdog.out.log</string>
+
+    <key>StandardErrorPath</key>
+    <string>{{LOG_DIR}}/watchdog.err.log</string>
+
+    <key>ProcessType</key>
+    <string>Background</string>
+</dict>
+</plist>

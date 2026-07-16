@@ -1,0 +1,10 @@
+node_modules/
+auth/
+data/
+logs/
+hooks/
+pair-qr.png
+.generated/
+launchd/*.plist
+*.log
+.DS_Store

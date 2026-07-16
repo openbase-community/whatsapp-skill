@@ -1,0 +1,30 @@
+{
+  "name": "whatsapp-skill",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Connect to WhatsApp via Baileys and expose approval-gated local WhatsApp history through a CLI.",
+  "main": "index.js",
+  "type": "module",
+  "bin": {
+    "whatsapp-local": "bin/whatsapp-cli.js"
+  },
+  "scripts": {
+    "start": "node index.js",
+    "whatsapp": "node bin/whatsapp-cli.js",
+    "test": "node --test"
+  },
+  "engines": {
+    "node": ">=24"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/montaguegabe/whatsapp-skill.git"
+  },
+  "dependencies": {
+    "@hapi/boom": "^10.0.1",
+    "@whiskeysockets/baileys": "^7.0.0-rc13",
+    "pino": "^9.5.0",
+    "qrcode": "^1.5.4",
+    "qrcode-terminal": "^0.12.0"
+  }
+}
