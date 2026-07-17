@@ -11,6 +11,42 @@ exposing only catalog metadata and approved-chat messages through explicit CLI c
 separated from reading: send attempts require approved contacts, explicit user approval, and a local
 outbox that is delivered only by the separately running archiver.
 
+## Security model & the lethal trifecta
+
+Any agent that can read your messages sits squarely inside the
+[**lethal trifecta**](https://simonwillison.net/2025/Jun/16/the-lethal-trifecta/) —
+the combination of capabilities that makes AI agents dangerous:
+
+1. **Access to private data** — your WhatsApp message and contact history.
+2. **Exposure to untrusted content** — inbound messages are attacker-controlled.
+   Anyone who can message you can attempt a prompt injection, and that text
+   enters agent context the moment it is read.
+3. **Ability to exfiltrate** — the `send` command is an outbound channel that
+   could be used to leak what the agent just read.
+
+A messaging skill has all three legs by nature, so this skill is built to break
+the chain rather than pretend it isn't there:
+
+- **The read leg is narrowed to approved contacts only.** Raw archives, auth
+  material, and backfill state live in service/sudo-only `data/protected/`
+  (mode `700`, owned by the `_whatsapp` service user) that the agent cannot
+  read. Only messages for contacts you explicitly `approve` are exposed through
+  the CLI; everything else is metadata-only.
+- **The exfiltration leg requires a human in the loop.** `send` is gated three
+  ways: the contact must carry a stored `send_allowed` flag, every send raises
+  an explicit Openbase Coder user-approval prompt, and even an approved send
+  only writes to a local outbox — nothing leaves the machine until the archiver
+  is separately run with `WHATSAPP_SEND_OUTBOX=1`. A prompt injection that says
+  "message my whole contact list" cannot deliver without your per-send yes.
+- **Mutating the trust surface requires `sudo`.** `approve`, `revoke`, and
+  storage migration change what the agent can see or send, and are root-gated.
+
+**Operator note:** treat all inbound message text as untrusted input. The
+per-send approval prompt is the primary backstop against injection-driven
+exfiltration — do not set `WHATSAPP_SKIP_OPENBASE_APPROVAL=1` or
+`WHATSAPP_ALLOW_UNPRIVILEGED_ADMIN=1` outside of controlled testing, and never
+in an environment an agent's own context can influence.
+
 ## Install Skill
 
 ```sh
