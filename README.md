@@ -50,8 +50,8 @@ in an environment an agent's own context can influence.
 ## Install Skill
 
 ```sh
-npx skills add montaguegabe/whatsapp-skill --list
-npx skills add montaguegabe/whatsapp-skill --skill whatsapp-cli
+npx skills add openbase-community/whatsapp-skill --list
+npx skills add openbase-community/whatsapp-skill --skill whatsapp-cli
 ```
 
 The agent skill lives at:
