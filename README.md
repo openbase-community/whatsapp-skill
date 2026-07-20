@@ -47,12 +47,14 @@ The CLI-facing data is split by access boundary:
 The CLI auto-creates the `~/.whatsapp` directory skeleton on startup if pieces are missing. It only creates missing directories; it does not move, delete, truncate, overwrite, or repair ownership on existing runtime data. Use the sudo launchd installer for authoritative ownership and permission repair.
 
 - Unapproved contacts/chats may be discovered as metadata, but their message bodies are not stored in SQLite.
-- Approved contacts/chats have recent archived messages backfilled into the approved SQLite store on approval, then future messages stored live.
+- In Openbase approvals mode, approved contacts/chats store future messages only and do not read protected archives.
+- In sudo mode, approved contacts/chats have recent archived messages backfilled into the approved SQLite store on approval, then future messages stored live.
 - The CLI can list/search contact metadata by name, phone number when available, JID, and recent activity timestamp, then read the last N stored messages for an approved conversation.
 - Contact metadata tools return identity fields, JIDs, activity timestamps, and permission flags only; they do not return message bodies.
 - `contacts`, `search`, `activity`, `approved`, `messages`, and `recent` do not require sudo for already-approved data.
-- `approve`, `revoke`, and storage migration require sudo because they change the approved surface or read protected raw archive data.
-- `send` asks Openbase Coder for user approval, then queues a local outbound request only when the contact has send permission. Actual WhatsApp delivery only happens when the Baileys archiver is separately run with `WHATSAPP_SEND_OUTBOX=1`.
+- `approve` and `revoke` support `--approval-mode openbase|sudo`. Openbase mode asks Openbase Coder for an exact-contact metadata-only approval and is lower friction for users who are comfortable with user-owned approved storage. Sudo mode keeps the strongest local Unix-permissions path and is required for protected archive backfill.
+- `send` always asks Openbase Coder for exact-contact approval, then queues a local outbound request only when the contact has send permission. Approval prompts include metadata such as contact ID and message length, not message bodies. Actual WhatsApp delivery only happens when the Baileys archiver is separately run with `WHATSAPP_SEND_OUTBOX=1`.
+- Approved-surface add, revoke, and send operations append metadata-only rows to `approval_audit` in the approved SQLite store.
 
 Use the CLI directly:
 
@@ -77,8 +79,8 @@ whatsapp-local approved [--json]
 whatsapp-local activity [--limit N] [--since today|YYYY-MM-DD|ISO] [--until YYYY-MM-DD|ISO] [--direction inbound|outbound|all] [--order asc|desc] [--json]
 whatsapp-local recent CONTACT_ID [--limit N] [--before TIMESTAMP_MS] [--json]
 whatsapp-local messages [--limit N] [--since today|YYYY-MM-DD|ISO] [--no-text] [--json]
-whatsapp-local approve CONTACT_ID [--name NAME] [--send] [--no-read] [--backfill-months N] [--json]
-whatsapp-local revoke CONTACT_ID [--json]
+whatsapp-local approve CONTACT_ID [--approval-mode openbase|sudo] [--name NAME] [--send] [--no-read] [--backfill-months N] [--json]
+whatsapp-local revoke CONTACT_ID [--approval-mode openbase|sudo] [--json]
 whatsapp-local send CONTACT_ID TEXT [--json]
 whatsapp-local queued [--limit N] [--json]
 whatsapp-local migrate-storage [--json]
@@ -91,7 +93,7 @@ sudo whatsapp-local rebuild-activity [--since today|YYYY-MM-DD|ISO] [--until YYY
 `direction: "inbound"` as someone else's message, even if the message text
 sounds like the account owner or the resolved `sender_display` is ambiguous.
 
-This lets a local skill expose only explicit CLI commands while keeping raw WhatsApp archive files out of agent context. `activity` lists metadata-only activity for people and groups, including unapproved chats, without message bodies. `rebuild-activity` requires sudo because it indexes metadata from the protected raw archive. Approving a contact backfills matching local JSON archive messages for that exact JID, then stores future messages live. Backfill defaults to the last 6 months and can be changed per approval with `--backfill-months` or globally with `WHATSAPP_BACKFILL_MONTHS`. It still does not load messages for unapproved contacts.
+This lets a local skill expose only explicit CLI commands while keeping raw WhatsApp archive files out of agent context. `activity` lists metadata-only activity for people and groups, including unapproved chats, without message bodies. `rebuild-activity` requires sudo because it indexes metadata from the protected raw archive. Openbase approval mode approves or revokes one exact JID through Openbase Coder and skips protected archive backfill; it is the smoother setup path for users less sensitive about local messaging-data permissions. Sudo mode approves one exact JID through the strong local-permissions path and backfills matching local JSON archive messages for that JID. Backfill defaults to the last 6 months and can be changed per approval with `--backfill-months` or globally with `WHATSAPP_BACKFILL_MONTHS`. It still does not load messages for unapproved contacts.
 
 ## Protected raw JSON archive
 

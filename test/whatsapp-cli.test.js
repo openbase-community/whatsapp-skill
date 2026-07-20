@@ -267,41 +267,90 @@ test('CLI asks Openbase Coder before queueing a send', () => {
       '--skill',
       'whatsapp-cli',
     ])
-    assert.ok(approvalArgs.includes('send-message'))
+    assert.ok(approvalArgs.includes('send-whatsapp-message'))
     assert.ok(approvalArgs.includes(`contact_id=${chatId}`))
+    assert.ok(approvalArgs.includes('message_length=11'))
+    assert.equal(approvalArgs.includes('message_preview=hello there'), false)
+    assert.equal(approvalArgs.join('\n').includes('hello there'), false)
   })
 })
 
-test('CLI approve uses sudo-equivalent privilege without Openbase approval', () => {
+test('CLI approve uses Openbase approval mode without sudo or protected backfill', () => {
   withTempDb(({ root, dbPath }) => {
     const approvalBin = join(root, 'openbase-coder')
+    const approvalArgsPath = join(root, 'approval-args.txt')
     writeFileSync(
       approvalBin,
-      '#!/bin/sh\nexit 42\n',
+      `#!/bin/sh\nprintf '%s\\n' "$@" > "${approvalArgsPath}"\n`,
     )
     chmodSync(approvalBin, 0o755)
 
     const result = JSON.parse(runCliWithEnv(
       dbPath,
-      ['approve', '15551234567@s.whatsapp.net', '--name', 'Synthetic Contact', '--no-read', '--json'],
+      ['approve', '15551234567@s.whatsapp.net', '--approval-mode', 'openbase', '--name', 'Synthetic Contact', '--send', '--json'],
       {
         PATH: `${root}:${process.env.PATH}`,
-        WHATSAPP_ALLOW_UNPRIVILEGED_ADMIN: '1',
+        OPENBASE_CODER_APPROVAL_TIMEOUT_SECONDS: '5',
       },
     ))
 
     assert.equal(result.contact.id, '15551234567@s.whatsapp.net')
     assert.equal(result.contact.approved, 1)
-    assert.equal(result.contact.read_allowed, 0)
+    assert.equal(result.contact.read_allowed, 1)
+    assert.equal(result.contact.send_allowed, 1)
     assert.equal(result.backfill.skipped, true)
+    assert.match(result.backfill.reason, /future-only/)
+    assert.equal(result.audit.action, 'approve-whatsapp-contact')
+    assert.equal(result.audit.entity_id, '15551234567@s.whatsapp.net')
+    assert.equal(result.audit.approval_mode, 'openbase')
+    const approvalArgs = readFileSync(approvalArgsPath, 'utf8').trim().split('\n')
+    assert.ok(approvalArgs.includes('approve-whatsapp-contact'))
+    assert.ok(approvalArgs.includes('contact_id=15551234567@s.whatsapp.net'))
   })
 })
 
-test('CLI requires sudo-equivalent privileges to approve contacts', () => {
+test('CLI sudo approval mode still requires sudo-equivalent privileges', () => {
   withTempDb(({ dbPath }) => {
     assert.throws(
-      () => runCli(dbPath, ['approve', '15551234567@s.whatsapp.net', '--json']),
+      () => runCli(dbPath, ['approve', '15551234567@s.whatsapp.net', '--approval-mode', 'sudo', '--json']),
       /requires sudo/,
+    )
+  })
+})
+
+test('CLI revoke uses Openbase approval mode and writes an audit row', () => {
+  withTempDb(({ root, dbPath, db }) => {
+    const chatId = '15551234567@s.whatsapp.net'
+    approveContact(db, chatId, { readAllowed: true, sendAllowed: true })
+    const approvalBin = join(root, 'openbase-coder')
+    const approvalArgsPath = join(root, 'approval-args.txt')
+    writeFileSync(approvalBin, `#!/bin/sh\nprintf '%s\\n' "$@" > "${approvalArgsPath}"\n`)
+    chmodSync(approvalBin, 0o755)
+
+    const result = JSON.parse(runCliWithEnv(
+      dbPath,
+      ['revoke', chatId, '--approval-mode', 'openbase', '--json'],
+      {
+        PATH: `${root}:${process.env.PATH}`,
+        OPENBASE_CODER_APPROVAL_TIMEOUT_SECONDS: '5',
+      },
+    ))
+
+    assert.equal(result.contact.approved, 0)
+    assert.equal(result.audit.action, 'revoke-whatsapp-contact')
+    assert.equal(result.audit.entity_id, chatId)
+    assert.equal(result.audit.approval_mode, 'openbase')
+    const approvalArgs = readFileSync(approvalArgsPath, 'utf8').trim().split('\n')
+    assert.ok(approvalArgs.includes('revoke-whatsapp-contact'))
+    assert.ok(approvalArgs.includes(`contact_id=${chatId}`))
+  })
+})
+
+test('CLI rejects wildcard approval targets', () => {
+  withTempDb(({ dbPath }) => {
+    assert.throws(
+      () => runCli(dbPath, ['approve', 'all', '--json']),
+      /wildcard approvals are not allowed/,
     )
   })
 })

@@ -22,9 +22,14 @@ and do not inspect raw WhatsApp files directly.
 - Use the CLI for all WhatsApp content access. It exposes only approved-contact
   message rows from the approved local SQLite store.
 - Do not approve, revoke, or queue sends unless the user explicitly asks.
-- Approving or revoking a contact requires sudo and does not also ask Openbase
-  Coder for approval. Queueing a send asks Openbase Coder for user approval.
-  Treat a declined or timed-out send approval as a hard stop.
+- Approving or revoking a contact must use an exact JID and either
+  `--approval-mode openbase` or `--approval-mode sudo`. Openbase mode asks
+  Openbase Coder for metadata-only user approval and skips protected archive
+  backfill. Sudo mode uses the stronger local Unix-permissions path and is
+  required for protected archive backfill.
+- Queueing a send asks Openbase Coder for exact-contact user approval. Treat a
+  declined or timed-out send approval as a hard stop. Approval prompts must not
+  include message bodies.
 - Before showing message text, make sure the user asked for messages from that
   exact contact/chat or otherwise clearly authorized that content lookup.
 
@@ -93,7 +98,16 @@ npm run whatsapp -- recent "15551234567@s.whatsapp.net" --limit 10 --json
 Approve a contact only when the user asks:
 
 ```sh
-sudo npm run whatsapp -- approve "15551234567@s.whatsapp.net" --name "Name" --json
+npm run whatsapp -- approve "15551234567@s.whatsapp.net" --approval-mode openbase --name "Name" --json
+npm run whatsapp -- approve "15551234567@s.whatsapp.net" --approval-mode openbase --name "Name" --send --json
+sudo npm run whatsapp -- approve "15551234567@s.whatsapp.net" --approval-mode sudo --name "Name" --json
+```
+
+Revoke a contact only when the user asks:
+
+```sh
+npm run whatsapp -- revoke "15551234567@s.whatsapp.net" --approval-mode openbase --json
+sudo npm run whatsapp -- revoke "15551234567@s.whatsapp.net" --approval-mode sudo --json
 ```
 
 Queue a send only when the user asks:

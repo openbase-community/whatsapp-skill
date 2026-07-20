@@ -3,6 +3,7 @@ import { spawnSync } from 'node:child_process'
 import { backfillApprovedContactFromArchive, rebuildCatalogActivityFromArchive } from '../lib/whatsapp-backfill.js'
 import { ensureRuntimeLayout, runtimeRootFromOptions } from '../lib/whatsapp-paths.js'
 import {
+  appendApprovalAudit,
   approveContact,
   createOutboundMessage,
   listApprovedContacts,
@@ -97,47 +98,118 @@ async function main(argv = process.argv.slice(2)) {
 
       case 'approve': {
         requireArgs(command, args, 1)
-        requirePrivileged(command)
+        const contactId = requireExactEntityId(command, args[0])
+        const approvalMode = approvalModeFromOptions(options)
+        if (approvalMode === 'sudo') {
+          requirePrivileged(command)
+        } else {
+          requestOpenbaseApproval({
+            action: 'approve-whatsapp-contact',
+            description: `Approve WhatsApp contact ${contactId}`,
+            command: formatApprovalCommand(command, [contactId]),
+            details: {
+              contact_id: contactId,
+              approval_mode: approvalMode,
+              read_allowed: !options['no-read'],
+              send_allowed: Boolean(options.send),
+              display_name_present: Boolean(options.name),
+            },
+          })
+        }
         db = openDb({ root, options })
-        const contact = approveContact(db, args[0], {
+        const contact = approveContact(db, contactId, {
           displayName: options.name ?? null,
           readAllowed: !options['no-read'],
           sendAllowed: Boolean(options.send),
           root: options.db ? null : root,
         })
         const months = options['backfill-months'] ? Number(options['backfill-months']) : undefined
-        const backfill = contact.read_allowed
+        const backfill = contact.read_allowed && approvalMode === 'sudo'
           ? backfillApprovedContactFromArchive(db, {
               root,
-              contactId: args[0],
+              contactId,
               months,
             })
-          : { skipped: true, reason: 'read not allowed' }
-        return output({ contact, backfill }, options)
+          : {
+              skipped: true,
+              reason: contact.read_allowed
+                ? 'openbase approval mode is future-only; protected archive backfill requires --approval-mode sudo'
+                : 'read not allowed',
+            }
+        const audit = appendApprovalAudit(db, {
+          action: 'approve-whatsapp-contact',
+          entityId: contactId,
+          approvalMode,
+          metadata: {
+            read_allowed: Boolean(contact.read_allowed),
+            send_allowed: Boolean(contact.send_allowed),
+            backfill_skipped: Boolean(backfill.skipped),
+          },
+        })
+        return output({ contact, backfill, audit }, options)
       }
 
-      case 'revoke':
+      case 'revoke': {
         requireArgs(command, args, 1)
-        requirePrivileged(command)
+        const contactId = requireExactEntityId(command, args[0])
+        const approvalMode = approvalModeFromOptions(options)
+        if (approvalMode === 'sudo') {
+          requirePrivileged(command)
+        } else {
+          requestOpenbaseApproval({
+            action: 'revoke-whatsapp-contact',
+            description: `Revoke WhatsApp contact ${contactId}`,
+            command: formatApprovalCommand(command, [contactId]),
+            details: {
+              contact_id: contactId,
+              approval_mode: approvalMode,
+            },
+          })
+        }
         db = openDb({ root, options })
-        return output({ contact: revokeContact(db, args[0], { root: options.db ? null : root }) }, options)
+        const contact = revokeContact(db, contactId, { root: options.db ? null : root })
+        const audit = appendApprovalAudit(db, {
+          action: 'revoke-whatsapp-contact',
+          entityId: contactId,
+          approvalMode,
+          metadata: {
+            approved_after: Boolean(contact?.approved),
+          },
+        })
+        return output({ contact, audit }, options)
+      }
 
-      case 'send':
+      case 'send': {
         requireArgs(command, args, 2)
+        const contactId = requireExactEntityId(command, args[0])
+        const messageText = args.slice(1).join(' ')
         requestOpenbaseApproval({
-          action: 'send-message',
-          description: `Queue a WhatsApp message to ${args[0]}`,
-          command: formatCommand(command, args),
+          action: 'send-whatsapp-message',
+          description: `Queue a WhatsApp message to ${contactId}`,
+          command: formatApprovalCommand(command, [contactId, '[message text redacted]']),
           details: {
-            contact_id: args[0],
-            message_preview: args.slice(1).join(' ').slice(0, 160),
+            contact_id: contactId,
+            approval_mode: 'openbase',
+            message_length: messageText.length,
           },
         })
         db = openDb({ root, options })
+        const queued = createOutboundMessage(db, contactId, messageText, { root: options.db ? null : root })
+        const audit = appendApprovalAudit(db, {
+          action: 'send-whatsapp-message',
+          entityId: contactId,
+          approvalMode: 'openbase',
+          metadata: {
+            outbox_id: queued.id,
+            message_length: messageText.length,
+          },
+        })
         return output({
-          queued: createOutboundMessage(db, args[0], args.slice(1).join(' '), { root: options.db ? null : root }),
+          queued,
+          audit,
           note: 'Queued locally. The archiver sends queued messages only when WHATSAPP_SEND_OUTBOX=1 is set.',
         }, options)
+      }
 
       case 'queued':
         db = openDb({ root, options, readOnly: true })
@@ -171,8 +243,29 @@ function openDb({ root, options, readOnly = false }) {
 
 function requirePrivileged(command) {
   if (process.env.WHATSAPP_ALLOW_UNPRIVILEGED_ADMIN === '1') return
-  if (typeof process.getuid === 'function' && process.getuid() === 0) return
+  if (isRootUser()) return
   throw new Error(`${command} requires sudo because it changes the approved WhatsApp surface`)
+}
+
+function approvalModeFromOptions(options) {
+  const mode = options['approval-mode'] ?? (isRootUser() ? 'sudo' : 'openbase')
+  if (!['openbase', 'sudo'].includes(mode)) {
+    throw new Error('--approval-mode must be "openbase" or "sudo"')
+  }
+  return mode
+}
+
+function isRootUser() {
+  return typeof process.getuid === 'function' && process.getuid() === 0
+}
+
+function requireExactEntityId(command, id) {
+  const value = String(id ?? '').trim()
+  const normalized = value.toLowerCase().replace(/[\s_-]+/g, '-')
+  if (!value || value === '*' || ['all', 'any', 'everyone', 'all-contacts', 'all-chats'].includes(normalized)) {
+    throw new Error(`${command} requires one exact contact id; wildcard approvals are not allowed`)
+  }
+  return value
 }
 
 function parseArgs(argv) {
@@ -327,8 +420,14 @@ function requestOpenbaseApproval({ action, description, command, details }) {
   }
 }
 
-function formatCommand(command, args) {
-  return ['whatsapp-local', command, ...args].join(' ')
+function formatApprovalCommand(command, args) {
+  return ['whatsapp-local', command, ...args.map(formatCommandArg)].join(' ')
+}
+
+function formatCommandArg(value) {
+  const raw = String(value)
+  if (/^[A-Za-z0-9_@.+:/=-]+$/.test(raw)) return raw
+  return JSON.stringify(raw)
 }
 
 function printHelp() {
@@ -341,8 +440,8 @@ Commands:
   activity [--limit N] [--since today|YYYY-MM-DD|ISO] [--until YYYY-MM-DD|ISO] [--direction inbound|outbound|all] [--order asc|desc] [--json]
   recent CONTACT_ID [--limit N] [--before TIMESTAMP_MS] [--json]
   messages [--limit N] [--since today|YYYY-MM-DD|ISO] [--no-text] [--json]
-  approve CONTACT_ID [--name NAME] [--send] [--no-read] [--backfill-months N] [--json]
-  revoke CONTACT_ID [--json]
+  approve CONTACT_ID [--approval-mode openbase|sudo] [--name NAME] [--send] [--no-read] [--backfill-months N] [--json]
+  revoke CONTACT_ID [--approval-mode openbase|sudo] [--json]
   send CONTACT_ID TEXT [--json]
   queued [--limit N] [--json]
   migrate-storage [--json]
@@ -351,6 +450,8 @@ Commands:
 Options:
   --db PATH       Use a specific SQLite database.
   --root PATH     Use a specific WhatsApp runtime root instead of ~/.whatsapp.
+  --approval-mode openbase|sudo
+                  openbase asks Openbase Coder and skips protected backfill; sudo uses the strong local-permissions path.
   --json          Emit JSON instead of JSON-lines/table-ish output.
 `)
 }
