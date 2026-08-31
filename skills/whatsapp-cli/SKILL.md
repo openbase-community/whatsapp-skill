@@ -2,15 +2,41 @@
 name: whatsapp-cli
 description: >-
   Use this skill when the user asks about WhatsApp contacts, approved
-  WhatsApp message history, or local WhatsApp archive administration through
-  the Mac mini CLI.
-version: 0.1.0
+  WhatsApp message history, or administration of the approval-gated local
+  WhatsApp archive and CLI.
+version: 0.2.0
 ---
 
 # WhatsApp CLI
 
-Use the local `whatsapp-local` CLI on the Mac mini. Do not use an MCP server,
-and do not inspect raw WhatsApp files directly.
+Use the `whatsapp-local` CLI on the user's designated WhatsApp host. Do not use
+an MCP server, and do not inspect raw WhatsApp files directly.
+
+## One Canonical Host
+
+Run the WhatsApp archiver and its runtime data on exactly one canonical,
+always-on host per WhatsApp account. A small always-on computer such as a Mac
+mini or a secured cloud machine is a better host than every laptop or desktop
+the user works from.
+
+Do not start independent archivers or create separate `~/.whatsapp` runtime
+directories on multiple machines for the same account. Multiple installations
+split archive and approval state and can create competing linked-device
+sessions.
+
+Before running a CLI command:
+
+1. Determine the designated host from `WHATSAPP_CLI_SSH_TARGET` or the user's
+   configured SSH host or IP.
+2. If the current agent is not already running on that host, SSH there first
+   and run the command remotely.
+3. Keep authentication, archives, approved-message storage, and the outbound
+   queue on that host. Workstations are clients of the host, not additional
+   archive servers.
+
+If no canonical host is configured, explain the one-host requirement and ask
+the user which always-on machine should own the installation. Do not silently
+initialize the current workstation.
 
 ## Hard Rules
 
@@ -33,18 +59,23 @@ and do not inspect raw WhatsApp files directly.
 - Before showing message text, make sure the user asked for messages from that
   exact contact/chat or otherwise clearly authorized that content lookup.
 
-## CLI Location
+## Connect to the Host
 
-The WhatsApp CLI and archive usually live on a Mac mini or always-on Mac. If
-the agent is not already running on that host, SSH there first before running
-WhatsApp commands. Use the user's configured SSH host, IP, or
-`WHATSAPP_CLI_SSH_TARGET` value:
+Use the configured target when available:
 
 ```sh
 ssh "$WHATSAPP_CLI_SSH_TARGET"
 ```
 
-The source repo is usually on that machine at:
+For a one-off remote command:
+
+```sh
+ssh "$WHATSAPP_CLI_SSH_TARGET" \
+  'PATH=/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin whatsapp-local help'
+```
+
+The source checkout may instead provide the CLI from its repository directory,
+commonly:
 
 ```sh
 ~/Developer/skills/whatsapp
@@ -54,13 +85,13 @@ Run commands from that repo:
 
 ```sh
 cd ~/Developer/skills/whatsapp
-PATH=/opt/homebrew/bin:/usr/bin:/bin npm run whatsapp -- help
+PATH=/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin npm run whatsapp -- help
 ```
 
 If `whatsapp-local` is available on `PATH`, it is equivalent to:
 
 ```sh
-PATH=/opt/homebrew/bin:/usr/bin:/bin whatsapp-local help
+PATH=/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin whatsapp-local help
 ```
 
 ## Common Commands
@@ -139,9 +170,14 @@ live in `data/approved/approved.sqlite`; raw archive/backfill data lives under
 `data/protected`. Agents should not open these files directly for conversational
 answers. Use `WHATSAPP_DB_PATH` only for tests or explicit maintenance requests.
 
-The launchd installer renders local plist files from templates and also removes
-stale MCP launchd labels:
+On a macOS archive host, the launchd installer renders local plist files from
+templates and also removes stale MCP launchd labels:
 
 ```sh
 sudo ./scripts/install-launchd-services.sh
 ```
+
+The launchd installer is macOS-specific. A non-macOS always-on host needs an
+equivalent service manager configured to run `node index.js` with a persistent
+`WHATSAPP_RUNTIME_HOME`; the one-canonical-host and CLI access rules stay the
+same.

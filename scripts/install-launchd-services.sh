@@ -80,9 +80,21 @@ restart_system_daemon() {
 
 echo "Repairing group memberships..."
 dseditgroup -o edit -a _whatsapp -t user whatsapp-data
-dseditgroup -o edit -a _whatsapp -t user staff
-
 dseditgroup -o edit -a "$run_user" -t user whatsapp-data
+
+# The archive source commonly lives below a login user's mode-750 home
+# directory. Give only the dedicated service account traversal permission on
+# that boundary instead of adding it to the broad staff group. Without this ACL
+# launchd reports EX_CONFIG before Node can start.
+if ! /bin/ls -lde "$user_home" | /usr/bin/grep -Fq "user:_whatsapp allow search"; then
+  /bin/chmod +a "_whatsapp allow search" "$user_home"
+fi
+
+if ! /usr/bin/sudo -u _whatsapp /bin/test -r "$repo_dir/index.js"; then
+  echo "_whatsapp cannot read the archiver source at $repo_dir." >&2
+  echo "Make sure each directory below the home directory is traversable by _whatsapp." >&2
+  exit 1
+fi
 
 echo "Ensuring runtime directories are owned by _whatsapp..."
 install -d -o _whatsapp -g whatsapp-data -m 710 "$runtime_dir"

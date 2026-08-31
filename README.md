@@ -2,6 +2,26 @@
 
 Connects to your WhatsApp account via [Baileys](https://baileys.wiki/docs/intro/), stores approved-contact message history for local CLI access, and includes an agent skill for using that CLI safely.
 
+## Deployment topology: one always-on host
+
+Choose one canonical, always-on host for each WhatsApp account, such as a Mac
+mini or a secured cloud machine. Run the archiver, authentication state,
+approved-message database, and outbound queue there. Do not run separate
+instances on every workstation: doing so splits state and can create competing
+linked-device sessions.
+
+Other machines should use the canonical host over SSH. Configure a stable SSH
+alias or set `WHATSAPP_CLI_SSH_TARGET`, then run the CLI on that host:
+
+```sh
+ssh "$WHATSAPP_CLI_SSH_TARGET" \
+  'PATH=/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin whatsapp-local help'
+```
+
+The launchd setup in this repository targets a macOS host. The Node archiver
+and CLI can run on another always-on host, but that platform needs its own
+service-manager configuration.
+
 ## Why a Custom CLI/Skill
 
 WhatsApp does not offer the same local, file-based access pattern as desktop chat archives, and a
@@ -147,16 +167,20 @@ sudo -u _whatsapp /usr/bin/env -i HOME="$HOME" WHATSAPP_RUNTIME_HOME="$HOME/.wha
 
 The archiver runs as a **system LaunchDaemon** under a dedicated, hidden service user `_whatsapp` (UID 450 in the example below). The installed plist defaults to `/Library/LaunchDaemons/com.$USER.whatsapp-archive.plist` (root-owned, world-readable, mode 644). The repo tracks launchd templates; `scripts/install-launchd-services.sh` renders local plists into `.generated/launchd/` so usernames and absolute paths are not committed.
 
-`~/.whatsapp/data/catalog` and `~/.whatsapp/data/approved` are owned by `_whatsapp:whatsapp-data` and readable by the `whatsapp-data` group. `~/.whatsapp/data/protected` and `~/.whatsapp/auth` are sudo/service-only. `~/.whatsapp/logs` is readable/writable by the `whatsapp-data` group and should contain operational metadata only, not message bodies. Membership: your login user and `_whatsapp` are in `whatsapp-data`, which allows normal CLI reads of catalog and already-approved messages without exposing raw archive/auth data. See **Lockdown** section below for setup.
+`~/.whatsapp/data/catalog` and `~/.whatsapp/data/approved` are owned by `_whatsapp:whatsapp-data` and readable by the `whatsapp-data` group. `~/.whatsapp/data/protected` and `~/.whatsapp/auth` are sudo/service-only. `~/.whatsapp/logs` is readable/writable by the `whatsapp-data` group and should contain operational metadata only, not message bodies. The login user and `_whatsapp` are in `whatsapp-data`, which allows normal CLI reads of catalog and already-approved messages without exposing raw archive/auth data. See **Lockdown** below for setup.
 
-For this machine, reinstall the archive LaunchDaemon and watchdog with:
+On the canonical macOS host, install or repair the archive LaunchDaemon and
+watchdog with:
 
 ```sh
 cd ~/Developer/skills/whatsapp
 sudo ./scripts/install-launchd-services.sh
 ```
 
-The installer also makes sure `_whatsapp` can traverse the source tree by adding it to `staff`, and makes sure the invoking user is in `whatsapp-data` for catalog, approved-store, and log reads.
+The installer gives `_whatsapp` traversal-only access across the login user's
+home-directory boundary, validates that it can read the source, and makes the
+invoking user a member of `whatsapp-data` for catalog, approved-store, and log
+reads. It does not add the service account to the broad `staff` group.
 
 ```sh
 # Status (note: system/ domain, NOT gui/$UID/)
@@ -242,10 +266,14 @@ EOF
 
 ## Lockdown (one-time setup, reproducible from scratch)
 
-The archive contains your full WhatsApp message history; we lock it down so other process-users on this machine (e.g. future `_linkedin`, `_email` etc.) cannot read it. Pattern: dedicated service user owns the runtime dirs, a small read group includes only your login user and the service user.
+The archive contains the account's full WhatsApp message history, so it is
+locked down from other process users on the host. The dedicated service user
+owns the runtime directories, and a small read group includes only the login
+user and the service user.
 
 ```sh
-# 1. Create the service user (UID 450, hidden from login picker, no shell, no home).
+# 1. Choose an unused local system UID/GID, then create a hidden service user.
+# Replace 450 below if that ID is already present on the host.
 sudo dscl . -create /Users/_whatsapp
 sudo dscl . -create /Users/_whatsapp UniqueID 450
 sudo dscl . -create /Users/_whatsapp PrimaryGroupID 450
@@ -259,7 +287,7 @@ sudo dscl . -create /Users/_whatsapp IsHidden 1
 sudo dseditgroup -o create -i 450 -r "WhatsApp data readers" whatsapp-data
 sudo dseditgroup -o edit -a "$USER" -t user whatsapp-data
 sudo dseditgroup -o edit -a _whatsapp  -t user whatsapp-data
-sudo dseditgroup -o edit -a _whatsapp  -t user staff   # so _whatsapp can traverse the user home to reach node + source
+sudo chmod +a "_whatsapp allow search" "$HOME"
 
 # 3. Transfer ownership and lock perms.
 sudo chown -R _whatsapp:whatsapp-data ~/.whatsapp/data ~/.whatsapp/auth ~/.whatsapp/logs
@@ -296,5 +324,6 @@ Downloads are fire-and-forget (don't block message ingest). Failures (expired UR
 - `markOnlineOnConnect: false` keeps your phone's "online" indicator off while the archiver runs.
 - `syncFullHistory: true` requests the full history sync; messages arrive via `messaging-history.set` and are saved alongside live ones.
 - `run.sh` is the interactive entry point (prints QR to terminal, opens `~/.whatsapp/pair-qr.png` in Preview). After lockdown, prefer the `sudo -u _whatsapp` invocation in **Re-pairing** above.
-- Runtime data lives under `~/.whatsapp`; source lives under `~/Developer/skills/whatsapp`.
+- Runtime data defaults to `~/.whatsapp`; source may live in any stable checkout
+  path readable by `_whatsapp`.
 - `node_modules/`, `hooks/`, `pair-qr.png`, and generated launchd plists are gitignored. Launchd templates are tracked so the lockdown is reproducible without committing machine-local usernames or paths.
