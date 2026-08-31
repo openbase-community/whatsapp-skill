@@ -5,7 +5,7 @@
 # runs reconnect silently.
 #
 # Messages land at ./data/<YYYY-MM-DD>/<HH-MM-SS>-<chatJid>-<msgId>.json,
-# matching the dated-folder layout used by ~/Developer/linkedin.
+# using a predictable dated-folder layout.
 
 set -u
 DIR="${0:A:h}"

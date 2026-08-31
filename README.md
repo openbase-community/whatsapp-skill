@@ -31,13 +31,33 @@ exposing only catalog metadata and approved-chat messages through explicit CLI c
 separated from reading: send attempts require approved contacts, explicit user approval, and a local
 outbox that is delivered only by the separately running archiver.
 
-GitHub collaborator: `@natea`.
+## Security model and the lethal trifecta
+
+Any agent that can read messages combines access to private data, exposure to
+untrusted inbound content, and a possible outbound exfiltration channel. This
+skill narrows those risks at each boundary:
+
+- **Reading is limited to approved contacts.** Raw archives, authentication
+  material, and backfill state remain service- or sudo-only. The CLI exposes
+  message bodies only from the approved store.
+- **Sending requires a human decision.** The contact must have send permission,
+  each send asks Openbase Coder for exact-contact approval, and an approved send
+  only enters a local outbox unless the canonical host explicitly enables
+  delivery with `WHATSAPP_SEND_OUTBOX=1`.
+- **Trust-surface changes are narrow and auditable.** Openbase approval mode
+  asks for exact-contact metadata-only approval and stores future messages.
+  Sudo mode is required to read protected archives for backfill. Both modes
+  write metadata-only audit rows.
+
+Treat inbound message text as untrusted input. Do not enable
+`WHATSAPP_SKIP_OPENBASE_APPROVAL=1` or
+`WHATSAPP_ALLOW_UNPRIVILEGED_ADMIN=1` outside controlled testing.
 
 ## Install Skill
 
 ```sh
-npx skills add montaguegabe/whatsapp-skill --list
-npx skills add montaguegabe/whatsapp-skill --skill whatsapp-cli
+npx skills add openbase-community/whatsapp-skill --list
+npx skills add openbase-community/whatsapp-skill --skill whatsapp-cli
 ```
 
 The agent skill lives at:
@@ -301,7 +321,9 @@ sudo ./scripts/install-launchd-services.sh
 
 After step 2, your group membership change won't show up in existing terminal sessions until you log out and back in. Launchd-spawned processes pick it up immediately.
 
-To add another locked-down archiver later (e.g. `_linkedin`), repeat the pattern with `_linkedin` + `linkedin-data` group; your login user joins both read groups but the two service users never join each other's.
+To add another locked-down archiver later, repeat the pattern with a distinct
+service user and read group; the login user can join both read groups while the
+service users remain isolated from each other.
 
 ## Media downloads
 
