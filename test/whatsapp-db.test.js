@@ -147,18 +147,25 @@ test('contact metadata can be listed and searched without read approval', () => 
       id: '15557654321@s.whatsapp.net',
       name: 'Another Person',
     })
+    upsertContact(db, {
+      id: '15559876543@s.whatsapp.net',
+      name: 'Connor Parish',
+    })
 
     const contacts = listContacts(db)
     const searchByName = searchContacts(db, 'synthetic')
     const searchByJid = searchContacts(db, '7654321')
+    const fuzzySearch = searchContacts(db, 'Connor Parsh')
 
-    assert.equal(contacts.length, 2)
+    assert.equal(contacts.length, 3)
     assert.equal(searchByName.length, 1)
     assert.equal(searchByName[0].id, '15551234567@s.whatsapp.net')
     assert.equal(searchByName[0].approved, 0)
     assert.equal(searchByName[0].read_allowed, 0)
     assert.equal(searchByJid.length, 1)
     assert.equal(searchByJid[0].display_name, 'Another Person')
+    assert.equal(fuzzySearch.length, 1)
+    assert.equal(fuzzySearch[0].display_name, 'Connor Parish')
     assert.throws(
       () => listRecentMessages(db, '15551234567@s.whatsapp.net'),
       /not approved for reading/,
@@ -177,6 +184,10 @@ test('catalog export exposes contact metadata without message bodies', () => {
       pushName: 'Synthetic Push',
       verifiedName: 'Synthetic Verified',
     }, { root: dir })
+    upsertContact(db, {
+      id: '15559876543@s.whatsapp.net',
+      name: 'Connor Parish',
+    }, { root: dir })
     approveContact(db, '15557654321@s.whatsapp.net', {
       displayName: 'Approved Person',
       readAllowed: true,
@@ -190,13 +201,16 @@ test('catalog export exposes contact metadata without message bodies', () => {
     const contacts = listCatalogContacts({ root: dir })
     const approved = listCatalogApprovedContacts({ root: dir })
     const search = searchCatalogContacts('synthetic', { root: dir })
+    const fuzzySearch = searchCatalogContacts('Connor Parsh', { root: dir })
 
-    assert.equal(contacts.length, 2)
+    assert.equal(contacts.length, 3)
     assert.equal(search.length, 1)
     assert.equal(search[0].id, '15551234567@s.whatsapp.net')
     assert.equal(search[0].contact_name, 'Synthetic Contact')
     assert.equal(search[0].verified_name, 'Synthetic Verified')
     assert.equal(search[0].phone_number, '15551234567')
+    assert.equal(fuzzySearch.length, 1)
+    assert.equal(fuzzySearch[0].display_name, 'Connor Parish')
     assert.equal(approved.length, 1)
     assert.equal(approved[0].id, '15557654321@s.whatsapp.net')
     assert.equal(approved[0].last_inbound_message_at, '2023-11-14T22:13:20.000Z')

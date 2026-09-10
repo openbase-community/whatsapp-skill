@@ -72,13 +72,18 @@ test('CLI searches contact metadata without reading messages', () => {
       id: '15551234567@s.whatsapp.net',
       name: 'Synthetic Contact',
     })
+    upsertContact(db, {
+      id: '15559876543@s.whatsapp.net',
+      name: 'Connor Parish',
+    })
 
-    const result = JSON.parse(runCli(dbPath, ['search', 'synthetic', '--json']))
+    const result = JSON.parse(runCli(dbPath, ['search', 'Connor Parsh', '--json']))
 
     assert.equal(result.length, 1)
-    assert.equal(result[0].id, '15551234567@s.whatsapp.net')
+    assert.equal(result[0].id, '15559876543@s.whatsapp.net')
+    assert.equal(result[0].display_name, 'Connor Parish')
     assert.equal(result[0].approved, 0)
-    assert.equal(result[0].phone_number, '15551234567')
+    assert.equal(result[0].phone_number, '15559876543')
   })
 })
 
@@ -90,11 +95,16 @@ test('CLI searches exported catalog without opening SQLite', () => {
       id: '15551234567@s.whatsapp.net',
       name: 'Synthetic Contact',
     }, { root })
+    upsertContact(db, {
+      id: '15559876543@s.whatsapp.net',
+      name: 'Connor Parish',
+    }, { root })
 
-    const result = JSON.parse(runCliRoot(root, ['search', 'synthetic', '--json']))
+    const result = JSON.parse(runCliRoot(root, ['search', 'Connor Parsh', '--json']))
 
     assert.equal(result.length, 1)
-    assert.equal(result[0].id, '15551234567@s.whatsapp.net')
+    assert.equal(result[0].id, '15559876543@s.whatsapp.net')
+    assert.equal(result[0].display_name, 'Connor Parish')
   } finally {
     db.close()
     rmSync(root, { recursive: true, force: true })
