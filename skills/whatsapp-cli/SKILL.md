@@ -53,9 +53,7 @@ initialize the current workstation.
   Openbase Coder for metadata-only user approval and skips protected archive
   backfill. Sudo mode uses the stronger local Unix-permissions path and is
   required for protected archive backfill.
-- Queueing a send asks Openbase Coder for exact-contact user approval. Treat a
-  declined or timed-out send approval as a hard stop. Approval prompts must not
-  include message bodies.
+- Queueing a send asks Openbase Coder for exact-contact user approval. Treat a declined or timed-out send approval as a hard stop. Include the complete outbound message in the approval details so the user can review what will be sent; keep the command preview redacted to avoid presenting executable text as the review surface.
 - Before showing message text, make sure the user asked for messages from that
   exact contact/chat or otherwise clearly authorized that content lookup.
 
@@ -73,6 +71,10 @@ For a one-off remote command:
 ssh "$WHATSAPP_CLI_SSH_TARGET" \
   'PATH=/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin whatsapp-local help'
 ```
+
+### Remote send approvals
+
+An approval request created by `whatsapp-local` belongs to the Openbase Coder server on the machine where the CLI process runs. When the canonical WhatsApp host is remote but the user is viewing Openbase Coder on the current workstation, do not leave the approval on the remote host. Request the exact-contact approval through the current workstation's `openbase-coder user approval request`, include the complete message in a `message` detail, and keep the command preview's body redacted. Only after that local request returns `Approval accepted` may the agent run the remote send with `WHATSAPP_SKIP_OPENBASE_APPROVAL=1`; the accepted local request is the approval, and the environment flag prevents a duplicate request on the remote host. A decline or timeout ends the send attempt.
 
 ### Clipboard approval handoff
 

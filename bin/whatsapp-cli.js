@@ -190,6 +190,7 @@ async function main(argv = process.argv.slice(2)) {
           details: {
             contact_id: contactId,
             approval_mode: 'openbase',
+            message: messageText,
             message_length: messageText.length,
           },
         })

@@ -279,9 +279,8 @@ test('CLI asks Openbase Coder before queueing a send', () => {
     ])
     assert.ok(approvalArgs.includes('send-whatsapp-message'))
     assert.ok(approvalArgs.includes(`contact_id=${chatId}`))
+    assert.ok(approvalArgs.includes('message=hello there'))
     assert.ok(approvalArgs.includes('message_length=11'))
-    assert.equal(approvalArgs.includes('message_preview=hello there'), false)
-    assert.equal(approvalArgs.join('\n').includes('hello there'), false)
   })
 })
 

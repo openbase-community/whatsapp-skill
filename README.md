@@ -93,7 +93,7 @@ The CLI auto-creates the `~/.whatsapp` directory skeleton on startup if pieces a
 - Contact metadata tools return identity fields, JIDs, activity timestamps, and permission flags only; they do not return message bodies.
 - `contacts`, `search`, `activity`, `approved`, `messages`, and `recent` do not require sudo for already-approved data.
 - `approve` and `revoke` support `--approval-mode openbase|sudo`. Openbase mode asks Openbase Coder for an exact-contact metadata-only approval and is lower friction for users who are comfortable with user-owned approved storage. Sudo mode keeps the strongest local Unix-permissions path and is required for protected archive backfill.
-- `send` always asks Openbase Coder for exact-contact approval, then queues a local outbound request only when the contact has send permission. Approval prompts include metadata such as contact ID and message length, not message bodies. Actual WhatsApp delivery only happens when the Baileys archiver is separately run with `WHATSAPP_SEND_OUTBOX=1`.
+- `send` always asks Openbase Coder for exact-contact approval, then queues a local outbound request only when the contact has send permission. Approval details include the complete outbound message so the user can review it, while the command preview keeps the message redacted. Actual WhatsApp delivery only happens when the Baileys archiver is separately run with `WHATSAPP_SEND_OUTBOX=1`.
 - Approved-surface add, revoke, and send operations append metadata-only rows to `approval_audit` in the approved SQLite store.
 
 Use the CLI directly:
@@ -187,7 +187,7 @@ sudo -u _whatsapp /usr/bin/env -i HOME="$HOME" WHATSAPP_RUNTIME_HOME="$HOME/.wha
 
 The archiver runs as a **system LaunchDaemon** under a dedicated, hidden service user `_whatsapp` (UID 450 in the example below). The installed plist defaults to `/Library/LaunchDaemons/com.$USER.whatsapp-archive.plist` (root-owned, world-readable, mode 644). The repo tracks launchd templates; `scripts/install-launchd-services.sh` renders local plists into `.generated/launchd/` so usernames and absolute paths are not committed.
 
-`~/.whatsapp/data/catalog` and `~/.whatsapp/data/approved` are owned by `_whatsapp:whatsapp-data` and readable by the `whatsapp-data` group. `~/.whatsapp/data/protected` and `~/.whatsapp/auth` are sudo/service-only. `~/.whatsapp/logs` is readable/writable by the `whatsapp-data` group and should contain operational metadata only, not message bodies. The login user and `_whatsapp` are in `whatsapp-data`, which allows normal CLI reads of catalog and already-approved messages without exposing raw archive/auth data. See **Lockdown** below for setup.
+`~/.whatsapp/data/catalog` is owned by `_whatsapp:whatsapp-data` and readable by the `whatsapp-data` group. `~/.whatsapp/data/approved` is owned by the same service user and is group-writable so the approval-gated CLI can add contacts, audit rows, and outbound requests. `~/.whatsapp/data/protected` and `~/.whatsapp/auth` are sudo/service-only. `~/.whatsapp/logs` is readable/writable by the `whatsapp-data` group and should contain operational metadata only, not message bodies. The login user and `_whatsapp` are in `whatsapp-data`, which allows normal CLI access to the approved surface without exposing raw archive/auth data. See **Lockdown** below for setup.
 
 On the canonical macOS host, install or repair the archive LaunchDaemon and
 watchdog with:
@@ -311,7 +311,8 @@ sudo chmod +a "_whatsapp allow search" "$HOME"
 
 # 3. Transfer ownership and lock perms.
 sudo chown -R _whatsapp:whatsapp-data ~/.whatsapp/data ~/.whatsapp/auth ~/.whatsapp/logs
-sudo chmod 750 ~/.whatsapp/data ~/.whatsapp/data/catalog ~/.whatsapp/data/approved
+sudo chmod 750 ~/.whatsapp/data ~/.whatsapp/data/catalog
+sudo chmod 770 ~/.whatsapp/data/approved
 sudo chmod 700 ~/.whatsapp/data/protected ~/.whatsapp/auth
 sudo chmod 770 ~/.whatsapp/logs
 
