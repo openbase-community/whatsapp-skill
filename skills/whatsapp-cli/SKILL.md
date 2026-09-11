@@ -74,6 +74,16 @@ ssh "$WHATSAPP_CLI_SSH_TARGET" \
   'PATH=/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin whatsapp-local help'
 ```
 
+### Clipboard approval handoff
+
+When the user asks to approve an unapproved contact on a remote canonical host, resolve the exact active JID and copy the complete one-line SSH approval command to the user's clipboard on macOS with `pbcopy`, then tell them it is ready to paste. Use `ssh -t` and sudo approval when the user needs to read or reply to messages that already exist, because sudo approval backfills the protected archive; include `--send` when they also asked to reply. Use Openbase approval mode when only future approved messages are needed. Do not include any message body in the copied approval command.
+
+Example for approving a contact, backfilling existing messages, and allowing replies:
+
+```sh
+printf '%s' 'ssh -t "$WHATSAPP_CLI_SSH_TARGET" '\''sudo /opt/homebrew/bin/whatsapp-local approve "15551234567@s.whatsapp.net" --approval-mode sudo --name "Name" --send --json'\''' | pbcopy
+```
+
 The source checkout may instead provide the CLI from its repository directory,
 commonly:
 
