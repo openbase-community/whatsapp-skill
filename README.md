@@ -309,8 +309,8 @@ sudo chmod +a "_whatsapp allow search" "$HOME"
 # 3. Transfer ownership and lock perms.
 sudo chown -R _whatsapp:whatsapp-data ~/.whatsapp/data ~/.whatsapp/auth ~/.whatsapp/logs
 sudo chmod 750 ~/.whatsapp/data
-sudo chmod 770 ~/.whatsapp/data/catalog
-sudo chmod 770 ~/.whatsapp/data/approved
+sudo chmod 2770 ~/.whatsapp/data/catalog
+sudo chmod 2770 ~/.whatsapp/data/approved
 sudo chmod 700 ~/.whatsapp/data/protected ~/.whatsapp/auth
 sudo chmod 770 ~/.whatsapp/logs
 

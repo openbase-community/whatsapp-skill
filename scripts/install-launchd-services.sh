@@ -99,8 +99,8 @@ fi
 echo "Ensuring runtime directories are owned by _whatsapp..."
 install -d -o _whatsapp -g whatsapp-data -m 710 "$runtime_dir"
 install -d -o _whatsapp -g whatsapp-data -m 710 "$data_dir"
-install -d -o _whatsapp -g whatsapp-data -m 770 "$data_dir/catalog"
-install -d -o _whatsapp -g whatsapp-data -m 770 "$data_dir/approved"
+install -d -o _whatsapp -g whatsapp-data -m 2770 "$data_dir/catalog"
+install -d -o _whatsapp -g whatsapp-data -m 2770 "$data_dir/approved"
 install -d -o _whatsapp -g whatsapp-data -m 700 "$data_dir/protected"
 install -d -o _whatsapp -g whatsapp-data -m 700 "$data_dir/protected/archive"
 install -d -o _whatsapp -g whatsapp-data -m 700 "$data_dir/protected/state"
@@ -130,8 +130,8 @@ for legacy_day_dir in "$data_dir"/[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]; do
 done
 
 chown -R _whatsapp:whatsapp-data "$data_dir/catalog" "$data_dir/approved" "$data_dir/protected" "$auth_dir" "$logs_dir"
-chmod 770 "$data_dir/catalog"
-chmod 770 "$data_dir/approved"
+chmod 2770 "$data_dir/catalog"
+chmod 2770 "$data_dir/approved"
 chmod 700 "$data_dir/protected" "$data_dir/protected/archive" "$data_dir/protected/state" "$auth_dir"
 chmod 770 "$logs_dir"
 find "$data_dir/catalog" -type f -exec chmod 660 {} + 2>/dev/null || true
