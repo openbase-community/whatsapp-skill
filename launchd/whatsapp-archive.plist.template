@@ -29,6 +29,8 @@
         <string>{{USER_HOME}}</string>
         <key>WHATSAPP_RUNTIME_HOME</key>
         <string>{{RUNTIME_DIR}}</string>
+        <key>WHATSAPP_SEND_OUTBOX</key>
+        <string>1</string>
     </dict>
 
     <key>RunAtLoad</key>

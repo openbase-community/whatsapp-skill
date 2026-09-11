@@ -40,10 +40,7 @@ skill narrows those risks at each boundary:
 - **Reading is limited to approved contacts.** Raw archives, authentication
   material, and backfill state remain service- or sudo-only. The CLI exposes
   message bodies only from the approved store.
-- **Sending requires a human decision.** The contact must have send permission,
-  each send asks Openbase Coder for exact-contact approval, and an approved send
-  only enters a local outbox unless the canonical host explicitly enables
-  delivery with `WHATSAPP_SEND_OUTBOX=1`.
+- **Sending requires a human decision.** The contact must have send permission, each send asks Openbase Coder for exact-contact approval, and an approved send enters the local outbox for delivery by the canonical host's archiver.
 - **Trust-surface changes are narrow and auditable.** Openbase approval mode
   asks for exact-contact metadata-only approval and stores future messages.
   Sudo mode is required to read protected archives for backfill. Both modes
@@ -93,7 +90,7 @@ The CLI auto-creates the `~/.whatsapp` directory skeleton on startup if pieces a
 - Contact metadata tools return identity fields, JIDs, activity timestamps, and permission flags only; they do not return message bodies.
 - `contacts`, `search`, `activity`, `approved`, `messages`, and `recent` do not require sudo for already-approved data.
 - `approve` and `revoke` support `--approval-mode openbase|sudo`. Openbase mode asks Openbase Coder for an exact-contact metadata-only approval and is lower friction for users who are comfortable with user-owned approved storage. Sudo mode keeps the strongest local Unix-permissions path and is required for protected archive backfill.
-- `send` always asks Openbase Coder for exact-contact approval, then queues a local outbound request only when the contact has send permission. Approval details include the complete outbound message so the user can review it, while the command preview keeps the message redacted. Actual WhatsApp delivery only happens when the Baileys archiver is separately run with `WHATSAPP_SEND_OUTBOX=1`.
+- `send` always asks Openbase Coder for exact-contact approval, then queues a local outbound request only when the contact has send permission. Approval details include the complete outbound message so the user can review it, while the command preview keeps the message redacted. The launchd installer enables outbound delivery in the separately running Baileys archiver.
 - Approved-surface add, revoke, and send operations append metadata-only rows to `approval_audit` in the approved SQLite store.
 
 Use the CLI directly:
